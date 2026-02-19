@@ -22,6 +22,12 @@ except ImportError:
     HAS_SHAREHOLDER_HISTORY = False
 
 try:
+    from src.core.indicators import run_consistency_checks
+    HAS_CONSISTENCY_CHECKS = True
+except ImportError:
+    HAS_CONSISTENCY_CHECKS = False
+
+try:
     from src.data.history_store import save_report as history_save_report
     HAS_HISTORY = True
 except ImportError:
@@ -146,6 +152,30 @@ def main():
                     trend = "➡️ 横ばい"
                 print()
                 print(f"- **トレンド**: {trend}")
+
+    # Consistency checks (analysis.md – 再発防止)
+    if HAS_CONSISTENCY_CHECKS:
+        warnings = run_consistency_checks(data)
+        if warnings:
+            print()
+            print("## ⚠️ バリュエーション整合性チェック")
+            for w in warnings:
+                print(f"- {w['message']}")
+
+    # EPS direction summary (always show if data available)
+    fwd_eps = data.get("forward_eps")
+    trail_eps = data.get("eps_current")
+    if fwd_eps is not None and trail_eps is not None and trail_eps != 0:
+        eps_growth_pct = (fwd_eps / trail_eps - 1) * 100
+        direction = "📈 増益" if fwd_eps >= trail_eps else "📉 減益"
+        print()
+        print("## EPS方向性")
+        print(f"| 指標 | 値 |")
+        print(f"|---:|:---|")
+        print(f"| TrailEPS | {trail_eps:.2f} |")
+        print(f"| FwdEPS | {fwd_eps:.2f} |")
+        print(f"| EPS成長率 | {eps_growth_pct:+.1f}% |")
+        print(f"| 方向性 | {direction}予想 |")
 
     if HAS_HISTORY:
         try:

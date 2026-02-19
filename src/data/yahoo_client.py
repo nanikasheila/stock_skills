@@ -476,6 +476,12 @@ def get_stock_detail(symbol: str) -> Optional[dict]:
             number_of_analyst_opinions = int(number_of_analyst_opinions_val) if number_of_analyst_opinions_val is not None else None
             recommendation_mean = _safe_get(info, "recommendationMean")
             forward_eps = _safe_get(info, "forwardEps")
+            # Fallback: use trailingEps from info when income_stmt
+            # returns NaN (common for incomplete fiscal years)
+            if eps_current is None:
+                trailing_eps_info = _safe_get(info, "trailingEps")
+                if trailing_eps_info is not None:
+                    eps_current = float(trailing_eps_info)
         except Exception:
             pass
 

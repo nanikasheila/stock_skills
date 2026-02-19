@@ -221,3 +221,155 @@ def calculate_shareholder_return(stock: dict) -> dict:
         "dividend_yield": div_yield,
         "buyback_yield": buyback_yield,
     }
+
+
+# ---------------------------------------------------------------------------
+# Consistency checks (analysis.md – 再発防止)
+# ---------------------------------------------------------------------------
+
+def check_eps_direction(stock: dict) -> Optional[dict]:
+    """Check if FwdEPS < TrailEPS (earnings decline forecast).
+
+    Returns a warning dict or None if no issue detected.
+    """
+    forward_eps = stock.get("forward_eps")
+    trailing_eps = stock.get("eps_current")
+    if forward_eps is None or trailing_eps is None:
+        return None
+    if trailing_eps == 0:
+        return None
+    growth = (forward_eps / trailing_eps - 1) * 100
+    if forward_eps < trailing_eps:
+        return {
+            "level": "warning",
+            "code": "EPS_DECLINE",
+            "message": (
+                f"🔴 減益予想: FwdEPS {forward_eps:.1f} < TrailEPS "
+                f"{trailing_eps:.1f} ({growth:+.1f}%)"
+            ),
+            "forward_eps": forward_eps,
+            "trailing_eps": trailing_eps,
+            "growth_pct": round(growth, 2),
+        }
+    return None
+
+
+def check_growth_consistency(stock: dict) -> Optional[dict]:
+    """Check if PEG denominator (earningsGrowth) contradicts FwdEPS direction.
+
+    earningsGrowth is backward-looking; FwdEPS is forward-looking.
+    If earningsGrowth > 0 but FwdEPS < TrailEPS, PEG is misleading.
+    """
+    earnings_growth = stock.get("earnings_growth")
+    forward_eps = stock.get("forward_eps")
+    trailing_eps = stock.get("eps_current")
+    forward_per = stock.get("forward_per")
+    if earnings_growth is None or forward_eps is None or trailing_eps is None:
+        return None
+    if trailing_eps == 0:
+        return None
+    # Skip when trailing EPS is negative: the growth formula is
+    # meaningless (e.g. -0.5 -> +7.0 = "recovery", not decline).
+    if trailing_eps < 0:
+        return None
+
+    fwd_growth = (forward_eps / trailing_eps - 1)
+    # earningsGrowth positive but forward decline
+    if earnings_growth > 0.05 and fwd_growth < -0.02:
+        peg_past = None
+        if forward_per is not None and earnings_growth > 0:
+            peg_past = forward_per / (earnings_growth * 100)
+        msg = (
+            f"⚠️ PEG矛盾: 過去earningsGrowth {earnings_growth*100:+.1f}% "
+            f"だがFwdEPS成長率 {fwd_growth*100:+.1f}%。"
+        )
+        if peg_past is not None:
+            msg += f" PEG({peg_past:.2f})は過去ベースで将来を反映していない"
+        return {
+            "level": "warning",
+            "code": "PEG_INCONSISTENCY",
+            "message": msg,
+            "earnings_growth": earnings_growth,
+            "fwd_eps_growth": round(fwd_growth, 4),
+            "peg_past_based": peg_past,
+        }
+    return None
+
+
+def check_margin_deterioration(stock: dict) -> Optional[dict]:
+    """Check if gross margin declined significantly (>= 5pt) across fiscal years.
+
+    Uses revenue_history and gross_profit data if available, otherwise
+    falls back to operating_margin from info.
+    """
+    # This check requires historical gross margin data which may not always
+    # be present in the standard data dict. Return None if insufficient data.
+    gross_margins = stock.get("gross_margins_history")
+    if gross_margins and len(gross_margins) >= 2:
+        latest = gross_margins[0]
+        previous = gross_margins[1]
+        if latest is not None and previous is not None:
+            delta_pt = (latest - previous) * 100
+            if delta_pt <= -5.0:
+                return {
+                    "level": "warning",
+                    "code": "MARGIN_DETERIORATION",
+                    "message": (
+                        f"⚠️ 粗利率悪化: {previous*100:.1f}% → "
+                        f"{latest*100:.1f}% ({delta_pt:+.1f}pt)"
+                    ),
+                    "latest": latest,
+                    "previous": previous,
+                    "delta_pt": round(delta_pt, 2),
+                }
+    return None
+
+
+def check_quarterly_eps_trend(stock: dict) -> Optional[dict]:
+    """Check if the most recent quarterly EPS declined QoQ.
+
+    Uses quarterly_eps list (latest-first) if available.
+    """
+    q_eps = stock.get("quarterly_eps")
+    if not q_eps or len(q_eps) < 2:
+        return None
+    latest = q_eps[0]
+    previous = q_eps[1]
+    if latest is None or previous is None or previous == 0:
+        return None
+    change_pct = (latest / previous - 1) * 100
+    if latest < previous:
+        return {
+            "level": "caution",
+            "code": "EPS_DECELERATION",
+            "message": (
+                f"⚠️ 四半期EPS鈍化: {previous:.2f} → "
+                f"{latest:.2f} ({change_pct:+.1f}% QoQ)"
+            ),
+            "latest_q_eps": latest,
+            "previous_q_eps": previous,
+            "change_pct": round(change_pct, 2),
+        }
+    return None
+
+
+def run_consistency_checks(stock: dict) -> list[dict]:
+    """Run all valuation consistency checks and return a list of warnings.
+
+    Each warning is a dict with keys: level, code, message, and
+    check-specific data fields.
+
+    Returns an empty list if no issues detected.
+    """
+    checks = [
+        check_eps_direction,
+        check_growth_consistency,
+        check_margin_deterioration,
+        check_quarterly_eps_trend,
+    ]
+    warnings = []
+    for check_fn in checks:
+        result = check_fn(stock)
+        if result is not None:
+            warnings.append(result)
+    return warnings

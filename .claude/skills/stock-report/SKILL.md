@@ -20,5 +20,7 @@ python3 /Users/kikuchihiroyuki/stock-skills/.claude/skills/stock-report/scripts/
 - **バリュエーション**: PER, PBR, 配当利回り, ROE, ROA, 利益成長率
 - **割安度判定**: 0-100点スコア + 判定（割安/やや割安/適正/割高）
 - **株主還元**（KIK-375）: 配当利回り + 自社株買い利回り = **総株主還元率**
+- **⚠️ バリュエーション整合性チェック**: EPS方向性・PEG矛盾・粗利率悪化・四半期EPS鈍化を自動検出
+- **EPS方向性**: FwdEPS vs TrailEPS の比較テーブル（増益/減益の明示）
 
 結果をそのまま表示してください。
