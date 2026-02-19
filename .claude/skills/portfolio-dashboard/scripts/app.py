@@ -27,6 +27,7 @@ from components.data_loader import (
     build_portfolio_history,
     get_sector_breakdown,
     get_monthly_summary,
+    get_trade_activity,
 )
 
 # =====================================================================
@@ -67,17 +68,34 @@ st.markdown("""
 st.sidebar.title("📊 Portfolio Dashboard")
 st.sidebar.markdown("---")
 
-period = st.sidebar.selectbox(
+_PERIOD_OPTIONS = [
+    ("1ヶ月", "1mo"),
+    ("3ヶ月", "3mo"),
+    ("6ヶ月", "6mo"),
+    ("1年", "1y"),
+    ("2年", "2y"),
+    ("3年", "3y"),
+    ("5年", "5y"),
+    ("全期間", "max"),
+]
+
+period_label = st.sidebar.selectbox(
     "📅 表示期間",
-    options=["1mo", "3mo", "6mo", "1y", "2y"],
+    options=[label for label, _ in _PERIOD_OPTIONS],
     index=1,
     help="株価履歴の取得期間",
 )
+period = dict(_PERIOD_OPTIONS)[period_label]
 
 chart_style = st.sidebar.radio(
     "🎨 チャートスタイル",
     options=["積み上げ面", "折れ線", "積み上げ棒"],
     index=0,
+)
+
+show_invested = st.sidebar.checkbox(
+    "投資額 vs 評価額を表示",
+    value=True,
 )
 
 show_individual = st.sidebar.checkbox(
@@ -159,8 +177,8 @@ st.markdown("---")
 st.markdown("### 📊 総資産推移")
 
 if not history_df.empty:
-    # 銘柄列（total 以外）を取得
-    stock_cols = [c for c in history_df.columns if c != "total"]
+    # 銘柄列（total / invested 以外）を取得
+    stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
 
     if chart_style == "積み上げ面":
         fig_total = go.Figure()
@@ -235,6 +253,41 @@ if not history_df.empty:
         )
 
     st.plotly_chart(fig_total, key="chart_total")
+
+    # ---------------------------------------------------------------
+    # 投資額 vs 評価額
+    # ---------------------------------------------------------------
+    if show_invested and "invested" in history_df.columns:
+        st.markdown("### 💰 投資額 vs 評価額")
+
+        fig_inv = go.Figure()
+        fig_inv.add_trace(go.Scatter(
+            x=history_df.index,
+            y=history_df["total"],
+            mode="lines",
+            name="評価額",
+            line=dict(width=2, color="#60a5fa"),
+            fill="tozeroy",
+            fillcolor="rgba(96,165,250,0.15)",
+            hovertemplate="評価額: ¥%{y:,.0f}<extra></extra>",
+        ))
+        fig_inv.add_trace(go.Scatter(
+            x=history_df.index,
+            y=history_df["invested"],
+            mode="lines",
+            name="累積投資額",
+            line=dict(width=2, color="#f59e0b", dash="dot"),
+            hovertemplate="投資額: ¥%{y:,.0f}<extra></extra>",
+        ))
+        fig_inv.update_layout(
+            xaxis_title="日付",
+            yaxis_title="金額（円）",
+            hovermode="x unified",
+            height=400,
+            yaxis=dict(tickformat=","),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.25),
+        )
+        st.plotly_chart(fig_inv, key="chart_invested")
 else:
     st.warning("株価履歴データが取得できませんでした。")
 
@@ -311,7 +364,7 @@ st.markdown("---")
 if show_individual and not history_df.empty:
     st.markdown("### 📉 銘柄別 個別推移")
 
-    stock_cols = [c for c in history_df.columns if c != "total"]
+    stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
     cols_per_row = 2
     for i in range(0, len(stock_cols), cols_per_row):
         cols = st.columns(cols_per_row)
@@ -357,35 +410,121 @@ if not history_df.empty:
             fig_monthly.add_trace(go.Bar(
                 x=monthly_df.index,
                 y=monthly_df["month_end_value_jpy"],
+                name="月末評価額",
                 marker_color=[
                     "#4ade80" if v >= 0 else "#f87171"
                     for v in monthly_df["change_pct"].fillna(0)
                 ],
                 hovertemplate="月末資産: ¥%{y:,.0f}<extra></extra>",
             ))
+            if "invested_jpy" in monthly_df.columns:
+                fig_monthly.add_trace(go.Scatter(
+                    x=monthly_df.index,
+                    y=monthly_df["invested_jpy"],
+                    name="累積投資額",
+                    mode="lines",
+                    line=dict(width=2, color="#f59e0b", dash="dot"),
+                    hovertemplate="投資額: ¥%{y:,.0f}<extra></extra>",
+                ))
             fig_monthly.update_layout(
                 title="月末資産額の推移",
                 xaxis_title="月",
                 yaxis_title="評価額（円）",
                 height=350,
                 yaxis=dict(tickformat=","),
+                legend=dict(orientation="h", yanchor="bottom", y=-0.35),
             )
             st.plotly_chart(fig_monthly, key="chart_monthly")
 
         with col_table:
-            display_monthly = monthly_df.copy()
-            display_monthly.columns = ["月末評価額(円)", "前月比(%)"]
+            display_cols = ["month_end_value_jpy", "change_pct"]
+            col_names = {"month_end_value_jpy": "月末評価額(円)", "change_pct": "前月比(%)"}
+            fmt = {"月末評価額(円)": "¥{:,.0f}", "前月比(%)": "{:+.1f}%"}
+            if "invested_jpy" in monthly_df.columns:
+                display_cols.insert(1, "invested_jpy")
+                col_names["invested_jpy"] = "投資額(円)"
+                fmt["投資額(円)"] = "¥{:,.0f}"
+            if "unrealized_pnl" in monthly_df.columns:
+                display_cols.append("unrealized_pnl")
+                col_names["unrealized_pnl"] = "含み損益(円)"
+                fmt["含み損益(円)"] = "¥{:,.0f}"
+            display_monthly = monthly_df[display_cols].rename(columns=col_names)
             st.dataframe(
-                display_monthly.style.format({
-                    "月末評価額(円)": "¥{:,.0f}",
-                    "前月比(%)": "{:+.1f}%",
-                }),
+                display_monthly.style.format(fmt),
                 width="stretch",
             )
     else:
         st.info("月次データなし（データ期間が短い可能性があります）")
 else:
     st.info("履歴データがありません")
+
+# =====================================================================
+# 取引アクティビティ
+# =====================================================================
+st.markdown("### 🔄 月次売買アクティビティ")
+
+
+@st.cache_data(ttl=300, show_spinner="取引データを集計中...")
+def load_trade_activity():
+    return get_trade_activity()
+
+
+trade_act_df = load_trade_activity()
+if not trade_act_df.empty:
+    col_flow, col_tbl = st.columns([2, 1])
+
+    with col_flow:
+        fig_flow = go.Figure()
+        fig_flow.add_trace(go.Bar(
+            x=trade_act_df.index,
+            y=trade_act_df["buy_amount"],
+            name="購入額",
+            marker_color="#60a5fa",
+            hovertemplate="購入: ¥%{y:,.0f}<extra></extra>",
+        ))
+        fig_flow.add_trace(go.Bar(
+            x=trade_act_df.index,
+            y=-trade_act_df["sell_amount"],
+            name="売却額",
+            marker_color="#f87171",
+            hovertemplate="売却: ¥%{y:,.0f}<extra></extra>",
+        ))
+        fig_flow.add_trace(go.Scatter(
+            x=trade_act_df.index,
+            y=trade_act_df["net_flow"],
+            name="ネットフロー",
+            mode="lines+markers",
+            line=dict(color="#fbbf24", width=2),
+            hovertemplate="ネット: ¥%{y:,.0f}<extra></extra>",
+        ))
+        fig_flow.update_layout(
+            title="月次売買フロー",
+            xaxis_title="月",
+            yaxis_title="金額（円）",
+            barmode="relative",
+            height=350,
+            yaxis=dict(tickformat=","),
+            legend=dict(orientation="h", yanchor="bottom", y=-0.35),
+        )
+        st.plotly_chart(fig_flow, key="chart_trade_flow")
+
+    with col_tbl:
+        display_act = trade_act_df.copy()
+        display_act.columns = [
+            "購入件数", "購入額(円)", "売却件数", "売却額(円)", "ネット(円)"
+        ]
+        st.dataframe(
+            display_act.style.format({
+                "購入件数": "{:.0f}",
+                "購入額(円)": "¥{:,.0f}",
+                "売却件数": "{:.0f}",
+                "売却額(円)": "¥{:,.0f}",
+                "ネット(円)": "¥{:,.0f}",
+            }),
+            width="stretch",
+        )
+else:
+    st.info("取引データがありません")
 
 # =====================================================================
 # フッター

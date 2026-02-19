@@ -2,24 +2,31 @@
 
 既存の portfolio_manager / history_store / yahoo_client を活用して
 ダッシュボード表示用のデータを組み立てる。
+
+取引履歴（JSON/CSVインポート）から各日の保有状況を復元し、
+株価履歴と掛け合わせて資産推移を構築する。
 """
 
 from __future__ import annotations
 
 import sys
 import os
-from datetime import datetime, timedelta
+import time as _time
+from collections import defaultdict
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 # --- プロジェクトルートを sys.path に追加 ---
-_PROJECT_ROOT = str(Path(__file__).resolve().parents[4])
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[5])
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 _DEFAULT_HISTORY_DIR = str(Path(_PROJECT_ROOT) / "data" / "history")
+_PRICE_CACHE_DIR = Path(_PROJECT_ROOT) / "data" / "cache" / "price_history"
+_CACHE_TTL_SECONDS = 4 * 3600  # 4 hours
 
 from src.core.portfolio.portfolio_manager import (
     load_portfolio,
@@ -123,8 +130,12 @@ def _build_holdings_timeline(
 ) -> list[dict]:
     """trade 履歴を日時順にロードして返す."""
     trades = load_history("trade", base_dir=base_dir or _DEFAULT_HISTORY_DIR)
-    # load_history は日付降順 → 昇順に
-    trades.sort(key=lambda t: t.get("timestamp", t.get("date", "")))
+    # 取引日 (date) でソート。同一日は buy/transfer → sell の順に並べる
+    _TRADE_TYPE_ORDER = {"transfer": 0, "buy": 1, "sell": 2}
+    trades.sort(key=lambda t: (
+        t.get("date", ""),
+        _TRADE_TYPE_ORDER.get(t.get("trade_type", "buy"), 1),
+    ))
     return trades
 
 
@@ -132,6 +143,8 @@ def _reconstruct_daily_holdings(
     trades: list[dict],
 ) -> dict[str, dict[str, int]]:
     """各取引日時点での全銘柄保有株数マップを返す.
+
+    buy / transfer → 保有追加、sell → 保有削減。
 
     Returns
     -------
@@ -147,7 +160,7 @@ def _reconstruct_daily_holdings(
         trade_type = trade.get("trade_type", "buy")
         date_str = trade.get("date", "")
 
-        if trade_type == "buy":
+        if trade_type in ("buy", "transfer"):
             cumulative[symbol] = cumulative.get(symbol, 0) + shares
         elif trade_type == "sell":
             cumulative[symbol] = max(0, cumulative.get(symbol, 0) - shares)
@@ -159,9 +172,199 @@ def _reconstruct_daily_holdings(
     return daily_snapshots
 
 
+def _compute_invested_capital(
+    trades: list[dict],
+    fx_rates: dict[str, float],
+) -> dict[str, float]:
+    """累積投資額(円換算)の推移を返す.
+
+    buy/transfer → +投資額、sell → −売却額
+    受渡金額ではなく shares*price*fx_rate で計算。
+
+    Returns
+    -------
+    dict
+        date_str -> cumulative_invested_jpy
+    """
+    cumulative = 0.0
+    invested: dict[str, float] = {}
+
+    for trade in trades:
+        shares = trade.get("shares", 0)
+        price = trade.get("price", 0)
+        currency = trade.get("currency", "JPY")
+        trade_type = trade.get("trade_type", "buy")
+        date_str = trade.get("date", "")
+        rate = fx_rates.get(currency, 1.0)
+        amount_jpy = shares * price * rate
+
+        if trade_type in ("buy", "transfer"):
+            cumulative += amount_jpy
+        elif trade_type == "sell":
+            cumulative -= amount_jpy
+        cumulative = max(0.0, cumulative)
+
+        invested[date_str] = cumulative
+
+    return invested
+
+
+def _build_trade_activity(
+    trades: list[dict],
+    fx_rates: dict[str, float],
+) -> pd.DataFrame:
+    """月ごとの売買件数・金額をまとめた DataFrame を返す."""
+    rows: list[dict] = []
+    for trade in trades:
+        shares = trade.get("shares", 0)
+        price = trade.get("price", 0)
+        currency = trade.get("currency", "JPY")
+        rate = fx_rates.get(currency, 1.0)
+        amount = shares * price * rate
+        tt = trade.get("trade_type", "buy")
+        d = trade.get("date", "")
+        if not d:
+            continue
+        month = d[:7]  # YYYY-MM
+        rows.append({
+            "month": month,
+            "trade_type": tt,
+            "amount_jpy": amount,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    buy_df = df[df["trade_type"].isin(["buy", "transfer"])].groupby("month").agg(
+        buy_count=("amount_jpy", "count"),
+        buy_amount=("amount_jpy", "sum"),
+    )
+    sell_df = df[df["trade_type"] == "sell"].groupby("month").agg(
+        sell_count=("amount_jpy", "count"),
+        sell_amount=("amount_jpy", "sum"),
+    )
+    result = buy_df.join(sell_df, how="outer").fillna(0)
+    result["net_flow"] = result["buy_amount"] - result["sell_amount"]
+    result.index.name = None
+    return result.sort_index()
+
+
 # ---------------------------------------------------------------------------
 # 3. 資産推移データの構築
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 期間 → yfinance period / start の変換
+# ---------------------------------------------------------------------------
+
+_PERIOD_MAP: dict[str, str | None] = {
+    "1mo":  "1mo",
+    "3mo":  "3mo",
+    "6mo":  "6mo",
+    "1y":   "1y",
+    "2y":   "2y",
+    "3y":   "3y",
+    "5y":   "5y",
+    "max":  "max",
+    "all":  "max",
+}
+
+
+def _fetch_price_history(
+    symbol: str, period: str,
+) -> Optional[pd.DataFrame]:
+    """期間指定に応じた株価履歴を取得する (個別フォールバック用)."""
+    yf_period = _PERIOD_MAP.get(period, period)
+    hist = yahoo_client.get_price_history(symbol, period=yf_period)
+    if hist is not None and not hist.empty:
+        return hist[["Close"]].rename(columns={"Close": symbol})
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 価格キャッシュ (ディスク + バッチ取得)
+# ---------------------------------------------------------------------------
+
+def _get_cache_path(period: str) -> Path:
+    """期間ごとのキャッシュファイルパスを返す."""
+    safe = period.replace("/", "_")
+    return _PRICE_CACHE_DIR / f"close_{safe}.csv"
+
+
+def _load_cached_prices(period: str) -> Optional[pd.DataFrame]:
+    """ディスクキャッシュから株価を読み込む. TTL 超過時は None."""
+    path = _get_cache_path(period)
+    if not path.exists():
+        return None
+    age = _time.time() - path.stat().st_mtime
+    if age > _CACHE_TTL_SECONDS:
+        return None
+    try:
+        df = pd.read_csv(path, index_col=0, parse_dates=True)
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
+def _save_prices_cache(prices: pd.DataFrame, period: str) -> None:
+    """株価をディスクキャッシュに保存."""
+    try:
+        _PRICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        prices.to_csv(_get_cache_path(period))
+    except Exception as e:
+        print(f"[data_loader] Cache save error: {e}")
+
+
+def _load_prices(symbols: list[str], period: str) -> pd.DataFrame:
+    """キャッシュ優先で全銘柄の終値を一括取得.
+
+    1. ディスクキャッシュが有効 (TTL 4h) → 即座に返す
+    2. キャッシュに不足銘柄 → 不足分のみバッチ取得してマージ
+    3. キャッシュなし → 全銘柄をバッチ取得 (yf.download 1 回)
+    """
+    yf_period = _PERIOD_MAP.get(period, period)
+
+    # --- キャッシュヒット ---
+    cached = _load_cached_prices(period)
+    if cached is not None:
+        missing = [s for s in symbols if s not in cached.columns]
+        if not missing:
+            available = [s for s in symbols if s in cached.columns]
+            print(f"[data_loader] Cache hit: {period} ({len(available)} symbols)")
+            return cached[available]
+        # 不足銘柄のみ追加取得
+        print(f"[data_loader] Cache partial: fetching {len(missing)} symbols")
+        new_prices = yahoo_client.get_close_prices_batch(missing, period=yf_period)
+        if new_prices is not None and not new_prices.empty:
+            new_prices.index = pd.to_datetime(new_prices.index).tz_localize(None)
+            merged = pd.concat([cached, new_prices], axis=1)
+            _save_prices_cache(merged, period)
+            available = [s for s in symbols if s in merged.columns]
+            if available:
+                return merged[available].sort_index().ffill()
+        available = [s for s in symbols if s in cached.columns]
+        return cached[available] if available else pd.DataFrame()
+
+    # --- キャッシュミス: バッチ取得 ---
+    print(f"[data_loader] Cache miss: batch-fetching {len(symbols)} symbols")
+    prices = yahoo_client.get_close_prices_batch(symbols, period=yf_period)
+    if prices is None or prices.empty:
+        # フォールバック: 個別取得
+        print("[data_loader] Batch failed, falling back to individual fetches")
+        frames: dict[str, pd.Series] = {}
+        for sym in symbols:
+            hist = _fetch_price_history(sym, period)
+            if hist is not None and sym in hist.columns:
+                frames[sym] = hist[sym]
+        if not frames:
+            return pd.DataFrame()
+        prices = pd.DataFrame(frames)
+    prices.index = pd.to_datetime(prices.index).tz_localize(None)
+    prices = prices.sort_index().ffill()
+    _save_prices_cache(prices, period)
+    return prices
+
 
 def build_portfolio_history(
     csv_path: str = DEFAULT_CSV_PATH,
@@ -180,13 +383,13 @@ def build_portfolio_history(
     base_dir : str | None
         history_store のベースディレクトリ
     period : str
-        株価取得期間 ("1mo", "3mo", "6mo", "1y", "2y" 等)
+        株価取得期間 ("1mo" .. "5y", "max", "all")
 
     Returns
     -------
     pd.DataFrame
         index=Date, columns=銘柄シンボル, values=円換算評価額
-        + "total" カラム
+        + "total" カラム + "invested" カラム
     """
     trades = _build_holdings_timeline(base_dir)
     if not trades:
@@ -200,7 +403,7 @@ def build_portfolio_history(
         all_symbols.update(snap.keys())
 
     # CASH 銘柄は除外（為替推移のみでの表示は別途対応可能）
-    stock_symbols = [s for s in all_symbols if not is_cash(s)]
+    stock_symbols = sorted(s for s in all_symbols if not is_cash(s))
 
     if not stock_symbols:
         return pd.DataFrame()
@@ -208,23 +411,10 @@ def build_portfolio_history(
     # 為替レート取得
     fx_rates = get_fx_rates(yahoo_client)
 
-    # 各銘柄の株価履歴を取得
-    price_histories: dict[str, pd.DataFrame] = {}
-    for symbol in stock_symbols:
-        hist = yahoo_client.get_price_history(symbol, period=period)
-        if hist is not None and not hist.empty:
-            price_histories[symbol] = hist[["Close"]].rename(
-                columns={"Close": symbol}
-            )
-
-    if not price_histories:
+    # 全銘柄の終値を一括取得（ディスクキャッシュ + バッチ取得）
+    price_df = _load_prices(stock_symbols, period)
+    if price_df.empty:
         return pd.DataFrame()
-
-    # 全銘柄の終値を結合
-    price_df = pd.concat(price_histories.values(), axis=1)
-    price_df.index = pd.to_datetime(price_df.index).tz_localize(None)
-    price_df = price_df.sort_index()
-    price_df = price_df.ffill()  # 休日を前営業日の値で埋める
 
     # 売買日 → 保有株数のマッピング — 日次に展開
     dates = price_df.index
@@ -233,11 +423,11 @@ def build_portfolio_history(
     # 各日の保有株数を computed
     sorted_trade_dates = sorted(daily_snapshots.keys())
 
-    def get_holdings_at(date: pd.Timestamp) -> dict[str, int]:
+    def get_holdings_at(ts: pd.Timestamp) -> dict[str, int]:
         """指定日時点の保有株数を返す."""
         result: dict[str, int] = {}
         for td in sorted_trade_dates:
-            if pd.Timestamp(td) <= date:
+            if pd.Timestamp(td) <= ts:
                 result = daily_snapshots[td]
             else:
                 break
@@ -246,12 +436,12 @@ def build_portfolio_history(
     # 日次評価額の計算
     eval_data: dict[str, list[float]] = {s: [] for s in stock_symbols}
 
-    for date in dates:
-        holdings = get_holdings_at(date)
+    for dt in dates:
+        holdings = get_holdings_at(dt)
         for symbol in stock_symbols:
             shares = holdings.get(symbol, 0)
             if shares > 0 and symbol in price_df.columns:
-                price_val = price_df.loc[date, symbol]
+                price_val = price_df.loc[dt, symbol]
                 if pd.notna(price_val):
                     currency = infer_currency(symbol)
                     rate = fx_rates.get(currency, 1.0)
@@ -268,8 +458,28 @@ def build_portfolio_history(
         first_trade_date = dates[0]
     result_df = result_df[result_df.index >= first_trade_date]
 
+    # 全期間ゼロの銘柄列を除外（既に売却済みで表示期間に保有がない銘柄）
+    symbol_cols = [c for c in result_df.columns if c not in ("total", "invested")]
+    zero_cols = [c for c in symbol_cols if (result_df[c] == 0).all()]
+    if zero_cols:
+        result_df = result_df.drop(columns=zero_cols)
+
     # 合計列
     result_df["total"] = result_df.sum(axis=1)
+
+    # 累積投資額列の追加
+    invested_map = _compute_invested_capital(trades, fx_rates)
+    invested_series: list[float] = []
+    sorted_inv_dates = sorted(invested_map.keys())
+    for dt in result_df.index:
+        inv_val = 0.0
+        for inv_d in sorted_inv_dates:
+            if pd.Timestamp(inv_d) <= dt:
+                inv_val = invested_map[inv_d]
+            else:
+                break
+        invested_series.append(inv_val)
+    result_df["invested"] = invested_series
 
     return result_df
 
@@ -301,11 +511,35 @@ def get_monthly_summary(history_df: pd.DataFrame) -> pd.DataFrame:
     if history_df.empty:
         return pd.DataFrame()
 
-    monthly = history_df[["total"]].resample("ME").last()
+    cols = ["total"]
+    if "invested" in history_df.columns:
+        cols.append("invested")
+
+    monthly = history_df[cols].resample("ME").last()
     monthly.index = monthly.index.strftime("%Y-%m")
-    monthly.columns = ["month_end_value_jpy"]
+    rename = {"total": "month_end_value_jpy"}
+    if "invested" in monthly.columns:
+        rename["invested"] = "invested_jpy"
+    monthly = monthly.rename(columns=rename)
 
     # 月次変動率
     monthly["change_pct"] = monthly["month_end_value_jpy"].pct_change() * 100
 
+    # 含み損益
+    if "invested_jpy" in monthly.columns:
+        monthly["unrealized_pnl"] = (
+            monthly["month_end_value_jpy"] - monthly["invested_jpy"]
+        )
+
     return monthly
+
+
+def get_trade_activity(
+    base_dir: str = _DEFAULT_HISTORY_DIR,
+) -> pd.DataFrame:
+    """月ごとの売買件数・金額を返す."""
+    trades = _build_holdings_timeline(base_dir)
+    if not trades:
+        return pd.DataFrame()
+    fx_rates = get_fx_rates(yahoo_client)
+    return _build_trade_activity(trades, fx_rates)

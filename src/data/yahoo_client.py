@@ -714,6 +714,82 @@ def get_price_history(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]
         return None
 
 
+def get_close_prices_batch(
+    symbols: list[str], period: str = "1y",
+) -> Optional[pd.DataFrame]:
+    """Fetch Close prices for multiple symbols in a single batch request.
+
+    Uses ``yf.download()`` for efficiency — one network round-trip for all
+    symbols.  Much faster than calling ``get_price_history()`` individually
+    (which sleeps 1 s per symbol).
+
+    Parameters
+    ----------
+    symbols : list[str]
+        Ticker symbols to fetch.
+    period : str
+        yfinance period string (e.g. ``"1mo"``, ``"1y"``, ``"max"``).
+
+    Returns
+    -------
+    pd.DataFrame | None
+        index = Date, columns = symbol names, values = Close price.
+        ``None`` on error or empty result.
+    """
+    if not symbols:
+        return None
+    try:
+        time.sleep(1)  # single rate-limit pause for the entire batch
+        tickers = symbols if len(symbols) > 1 else symbols[0]
+        data = yf.download(tickers, period=period, progress=False)
+        if data is None or data.empty:
+            print(f"[yahoo_client] No batch price data for {symbols}")
+            return None
+
+        # --- Single ticker: flat columns ---
+        if len(symbols) == 1:
+            if isinstance(data.columns, pd.MultiIndex):
+                try:
+                    close_s = data["Close"]
+                    if isinstance(close_s, pd.Series):
+                        return close_s.to_frame(name=symbols[0])
+                    return close_s.rename(
+                        columns={close_s.columns[0]: symbols[0]}
+                    )
+                except (KeyError, IndexError):
+                    pass
+            if "Close" in data.columns:
+                return data[["Close"]].rename(columns={"Close": symbols[0]})
+            return None
+
+        # --- Multiple tickers: MultiIndex (Price, Ticker) ---
+        if isinstance(data.columns, pd.MultiIndex):
+            try:
+                close_df = data["Close"]
+                if isinstance(close_df, pd.Series):
+                    close_df = close_df.to_frame()
+                return close_df
+            except KeyError:
+                pass
+            # Alternative level arrangement (Ticker, Price)
+            result_frames: dict[str, "pd.Series"] = {}
+            for sym in symbols:
+                try:
+                    if sym in data.columns.get_level_values(0):
+                        sym_data = data[sym]
+                        if "Close" in sym_data.columns:
+                            result_frames[sym] = sym_data["Close"]
+                except (KeyError, TypeError):
+                    continue
+            if result_frames:
+                return pd.DataFrame(result_frames)
+
+        return None
+    except Exception as e:
+        print(f"[yahoo_client] Error in batch price fetch: {e}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Macro Indicators (KIK-396)
 # ---------------------------------------------------------------------------
