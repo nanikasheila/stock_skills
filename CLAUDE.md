@@ -73,6 +73,16 @@ python3 .claude/skills/investment-note/scripts/manage_note.py delete --id NOTE_I
 # 知識グラフ照会（自然言語）
 python3 .claude/skills/graph-query/scripts/run_query.py "7203.Tの前回レポートは？"
 
+# ポートフォリオダッシュボード（ブラウザ表示）
+python3 .claude/skills/portfolio-dashboard/scripts/run_dashboard.py
+python3 .claude/skills/portfolio-dashboard/scripts/run_dashboard.py --port 8502
+
+# 取引履歴CSVインポート（楽天証券形式）
+python3 scripts/import_trade_csv.py data/history/trade/tradehistory(JP)_YYYYMMDD.csv
+python3 scripts/import_trade_csv.py data/history/trade/tradehistory(US)_YYYYMMDD.csv
+python3 scripts/import_trade_csv.py data/history/trade/   # ディレクトリ内の全CSVを一括インポート
+python3 scripts/import_trade_csv.py --dry-run FILE.csv    # 保存せず解析結果だけ表示
+
 # テスト
 python3 -m pytest tests/ -q
 
@@ -93,6 +103,7 @@ Skills (.claude/skills/*/SKILL.md → scripts/*.py)
   ├─ stress-test/run_stress_test.py
   ├─ investment-note/manage_note.py  … save/list/delete (投資メモCRUD)
   ├─ graph-query/run_query.py        … 自然言語→グラフ照会
+  ├─ portfolio-dashboard/run_dashboard.py … Streamlit+Plotly ブラウザダッシュボード
   └─ stock-portfolio/run_portfolio.py … snapshot/buy/sell/analyze/health/forecast/rebalance/simulate/what-if/backtest/list
       │
       │  sys.path.insert で project root を追加して src/ を import
@@ -192,6 +203,12 @@ Skills (.claude/skills/*/SKILL.md → scripts/*.py)
                      (投資メモ管理,
                       JSON=master, Neo4j=view,
                       thesis/observation/concern/review/target/lesson)
+                     trade_csv_importer.py
+                     (楽天証券CSV取引履歴インポーター,
+                      JP/US形式自動判定,
+                      同日同銘柄同方向の集約(加重平均),
+                      入庫(transfer)対応,
+                      重複スキップ/dry-run/ディレクトリ一括)
                      graph_nl_query.py
                      (自然言語→グラフ照会ディスパッチ,
                       テンプレートマッチ→graph_query関数,
@@ -224,6 +241,7 @@ Skills (.claude/skills/*/SKILL.md → scripts/*.py)
   Scripts: scripts/
            get_context.py ─ 自動コンテキスト注入CLI(KIK-411)
            init_graph.py ─ Neo4jスキーマ初期化+既存履歴インポート
+           import_trade_csv.py ─ 楽天証券CSV取引履歴インポーター
            hooks/pre-commit ─ src/変更時のドキュメント更新チェック(KIK-407)
                            (screen/report/trade/health/research/
                             portfolio/watchlist/notes/market_context,
