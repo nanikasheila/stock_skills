@@ -6,7 +6,7 @@ Integrates yfinance quantitative data with Grok API qualitative data
 
 import sys
 
-from src.core.indicators import calculate_value_score
+from src.core.screening.indicators import calculate_value_score
 
 # Grok API: graceful degradation when module is unavailable
 try:
@@ -103,6 +103,20 @@ def _empty_market() -> dict:
         "sentiment": {"score": 0.0, "summary": ""},
         "upcoming_events": [],
         "sector_rotation": [],
+        "raw_response": "",
+    }
+
+
+def _empty_business() -> dict:
+    """Return an empty business model research result."""
+    return {
+        "overview": "",
+        "segments": [],
+        "revenue_model": "",
+        "competitive_advantages": [],
+        "key_metrics": [],
+        "growth_strategy": [],
+        "risks": [],
         "raw_response": "",
     }
 
@@ -205,35 +219,88 @@ def research_industry(theme: str) -> dict:
     }
 
 
-def research_market(market: str) -> dict:
-    """Run market overview research via Grok API.
+def research_market(market: str, yahoo_client_module=None) -> dict:
+    """Run market overview research via yfinance quantitative + Grok qualitative.
 
     Parameters
     ----------
     market : str
         Market name or index (e.g. "Nikkei 225", "S&P500").
+    yahoo_client_module : module, optional
+        The yahoo_client module for macro indicators (enables mock injection).
+        When ``None``, macro_indicators will be empty (backward compatible).
 
     Returns
     -------
     dict
-        Market research data. When Grok API is unavailable,
-        returns empty result with ``api_unavailable=True``.
+        Market research data with ``macro_indicators`` (Layer 1, always)
+        and ``grok_research`` (Layer 2, when Grok API is available).
     """
-    if not _grok_available():
-        return {
-            "market": market,
-            "type": "market",
-            "grok_research": _empty_market(),
-            "api_unavailable": True,
-        }
+    # Layer 1: yfinance quantitative (always available)
+    macro_indicators: list[dict] = []
+    if yahoo_client_module and hasattr(yahoo_client_module, "get_macro_indicators"):
+        try:
+            macro_indicators = yahoo_client_module.get_macro_indicators() or []
+        except Exception:
+            pass
 
-    result = _safe_grok_call(grok_client.search_market, market)
-    if result is None:
-        result = _empty_market()
+    # Layer 2: Grok qualitative (when API key is set)
+    grok_research = _empty_market()
+    api_unavailable = True
+    if _grok_available():
+        result = _safe_grok_call(grok_client.search_market, market)
+        if result is not None:
+            grok_research = result
+        api_unavailable = False
 
     return {
         "market": market,
         "type": "market",
+        "macro_indicators": macro_indicators,
+        "grok_research": grok_research,
+        "api_unavailable": api_unavailable,
+    }
+
+
+def research_business(symbol: str, yahoo_client_module) -> dict:
+    """Run business model research combining yfinance and Grok API.
+
+    Parameters
+    ----------
+    symbol : str
+        Ticker symbol (e.g. "7751.T", "AAPL").
+    yahoo_client_module
+        The yahoo_client module (enables mock injection in tests).
+
+    Returns
+    -------
+    dict
+        Business model research data. When Grok API is unavailable,
+        returns empty result with ``api_unavailable=True``.
+    """
+    # Fetch company name from yfinance for prompt enrichment
+    info = yahoo_client_module.get_stock_info(symbol)
+    if info is None:
+        info = {}
+    company_name = info.get("name") or ""
+
+    if not _grok_available():
+        return {
+            "symbol": symbol,
+            "name": company_name,
+            "type": "business",
+            "grok_research": _empty_business(),
+            "api_unavailable": True,
+        }
+
+    result = _safe_grok_call(grok_client.search_business, symbol, company_name)
+    if result is None:
+        result = _empty_business()
+
+    return {
+        "symbol": symbol,
+        "name": company_name,
+        "type": "business",
         "grok_research": result,
         "api_unavailable": False,
     }

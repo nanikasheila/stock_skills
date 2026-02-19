@@ -2,19 +2,27 @@
 
 from typing import Optional
 
-
-def _fmt_pct(value: Optional[float]) -> str:
-    """Format a decimal ratio as a percentage string (e.g. 0.035 -> '3.50%')."""
-    if value is None:
-        return "-"
-    return f"{value * 100:.2f}%"
+from src.output._format_helpers import fmt_pct as _fmt_pct
+from src.output._format_helpers import fmt_float as _fmt_float
+from src.output._format_helpers import build_label as _build_label
 
 
-def _fmt_float(value: Optional[float], decimals: int = 2) -> str:
-    """Format a float with the given decimal places, or '-' if None."""
-    if value is None:
-        return "-"
-    return f"{value:.{decimals}f}"
+def _append_annotation_footer(lines: list[str], results: list[dict]) -> None:
+    """Append marker legend and note details if any results have annotations (KIK-418/419)."""
+    has_markers = any(r.get("_note_markers") for r in results)
+    if not has_markers:
+        return
+
+    lines.append("")
+    lines.append("**マーカー凡例**: \u26a0\ufe0f=懸念メモあり / \U0001f4dd=学びメモあり / \U0001f440=様子見")
+
+    # Collect note summaries for annotated stocks
+    noted = [(r.get("symbol", "?"), r.get("_note_summary", "")) for r in results if r.get("_note_summary")]
+    if noted:
+        lines.append("")
+        lines.append("**メモ詳細**:")
+        for sym, summary in noted:
+            lines.append(f"- **{sym}**: {summary}")
 
 
 def format_markdown(results: list[dict]) -> str:
@@ -40,9 +48,7 @@ def format_markdown(results: list[dict]) -> str:
     ]
 
     for rank, row in enumerate(results, start=1):
-        symbol = row.get("symbol", "-")
-        name = row.get("name") or ""
-        label = f"{symbol} {name}".strip() if name else symbol
+        label = _build_label(row)
 
         price = _fmt_float(row.get("price"), decimals=0) if row.get("price") is not None else "-"
         per = _fmt_float(row.get("per"))
@@ -55,6 +61,7 @@ def format_markdown(results: list[dict]) -> str:
             f"| {rank} | {label} | {price} | {per} | {pbr} | {div_yield} | {roe} | {score} |"
         )
 
+    _append_annotation_footer(lines, results)
     return "\n".join(lines)
 
 
@@ -83,9 +90,7 @@ def format_query_markdown(results: list[dict]) -> str:
     ]
 
     for rank, row in enumerate(results, start=1):
-        symbol = row.get("symbol", "-")
-        name = row.get("name") or ""
-        label = f"{symbol} {name}".strip() if name else symbol
+        label = _build_label(row)
         sector = row.get("sector") or "-"
 
         price = _fmt_float(row.get("price"), decimals=0) if row.get("price") is not None else "-"
@@ -99,6 +104,7 @@ def format_query_markdown(results: list[dict]) -> str:
             f"| {rank} | {label} | {sector} | {price} | {per} | {pbr} | {div_yield} | {roe} | {score} |"
         )
 
+    _append_annotation_footer(lines, results)
     return "\n".join(lines)
 
 
@@ -113,9 +119,7 @@ def format_pullback_markdown(results: list[dict]) -> str:
     ]
 
     for rank, row in enumerate(results, start=1):
-        symbol = row.get("symbol", "-")
-        name = row.get("name") or ""
-        label = f"{symbol} {name}".strip() if name else symbol
+        label = _build_label(row)
 
         price = _fmt_float(row.get("price"), decimals=0) if row.get("price") is not None else "-"
         per = _fmt_float(row.get("per"))
@@ -139,6 +143,39 @@ def format_pullback_markdown(results: list[dict]) -> str:
             f"| {rank} | {label} | {price} | {per} | {pullback} | {rsi} | {vol_ratio} | {sma50} | {sma200} | {bounce_str} | {match_str} | {score} |"
         )
 
+    _append_annotation_footer(lines, results)
+    return "\n".join(lines)
+
+
+def format_growth_markdown(results: list[dict]) -> str:
+    """Format growth screening results as a Markdown table.
+
+    Shows EPS growth, revenue growth, and ROE instead of value-centric columns.
+    """
+    if not results:
+        return "成長条件に合致する銘柄が見つかりませんでした。"
+
+    lines = [
+        "| 順位 | 銘柄 | セクター | 株価 | PER | PBR | EPS成長 | 売上成長 | ROE |",
+        "|---:|:-----|:---------|-----:|----:|----:|-------:|--------:|----:|",
+    ]
+
+    for rank, row in enumerate(results, start=1):
+        label = _build_label(row)
+        sector = row.get("sector") or "-"
+
+        price = _fmt_float(row.get("price"), decimals=0) if row.get("price") is not None else "-"
+        per = _fmt_float(row.get("per"))
+        pbr = _fmt_float(row.get("pbr"))
+        eps_g = _fmt_pct(row.get("eps_growth"))
+        rev_g = _fmt_pct(row.get("revenue_growth"))
+        roe = _fmt_pct(row.get("roe"))
+
+        lines.append(
+            f"| {rank} | {label} | {sector} | {price} | {per} | {pbr} | {eps_g} | {rev_g} | {roe} |"
+        )
+
+    _append_annotation_footer(lines, results)
     return "\n".join(lines)
 
 
@@ -157,9 +194,7 @@ def format_alpha_markdown(results: list[dict]) -> str:
     ]
 
     for rank, row in enumerate(results, start=1):
-        symbol = row.get("symbol", "-")
-        name = row.get("name") or ""
-        label = f"{symbol} {name}".strip() if name else symbol
+        label = _build_label(row)
 
         price = _fmt_float(row.get("price"), decimals=0) if row.get("price") is not None else "-"
         per = _fmt_float(row.get("per"))
@@ -207,6 +242,42 @@ def format_alpha_markdown(results: list[dict]) -> str:
     lines.append("**変化指標**: ア=アクルーアルズ(利益の質) / 加速=売上成長加速度 / FCF=FCF利回り / ROE趨勢=ROE改善トレンド")
     lines.append("**判定**: ◎=優秀(20+) ○=良好(15+) △=普通(10+) ×=不足(<10)")
 
+    _append_annotation_footer(lines, results)
+    return "\n".join(lines)
+
+
+def format_shareholder_return_markdown(results: list[dict]) -> str:
+    """Format shareholder-return screening results as Markdown table."""
+    if not results:
+        return "_該当銘柄なし_"
+    lines = []
+    lines.append("| # | 銘柄 | セクター | PER | ROE | 配当利回り | 自社株買い | 総還元率 | 安定度 |")
+    lines.append("|--:|:-----|:--------|----:|----:|----------:|---------:|--------:|:------|")
+    for i, s in enumerate(results, 1):
+        name = s.get("name", s.get("symbol", "?"))
+        symbol = s.get("symbol", "")
+        markers = s.get("_note_markers", "")
+        sector = s.get("sector", "-")
+        per = s.get("per") or s.get("trailingPE")
+        roe = s.get("roe") or s.get("returnOnEquity")
+        div_yield = s.get("dividend_yield_trailing") or s.get("dividend_yield")
+        buyback = s.get("buyback_yield")
+        total_sr = s.get("total_shareholder_return")
+        stability_label = s.get("return_stability_label", "-")
+        stability_reason = s.get("return_stability_reason")
+        if stability_reason:
+            stability_label = f"{stability_label}（{stability_reason}）"
+
+        per_str = f"{per:.1f}" if per else "-"
+        roe_str = f"{roe*100:.1f}%" if roe else "-"
+        div_str = f"{div_yield*100:.2f}%" if div_yield else "-"
+        bb_str = f"{buyback*100:.2f}%" if buyback else "-"
+        sr_str = f"**{total_sr*100:.2f}%**" if total_sr else "-"
+
+        marker_suffix = f" {markers}" if markers else ""
+        lines.append(f"| {i} | {name} ({symbol}){marker_suffix} | {sector} | {per_str} | {roe_str} | {div_str} | {bb_str} | {sr_str} | {stability_label} |")
+
+    _append_annotation_footer(lines, results)
     return "\n".join(lines)
 
 
@@ -229,9 +300,7 @@ def format_trending_markdown(results: list[dict], market_context: str = "") -> s
     )
 
     for rank, row in enumerate(results, start=1):
-        symbol = row.get("symbol", "-")
-        name = row.get("name") or ""
-        label = f"{symbol} {name}".strip() if name else symbol
+        label = _build_label(row)
 
         reason = row.get("trending_reason") or "-"
         if len(reason) > 40:
@@ -263,4 +332,5 @@ def format_trending_markdown(results: list[dict], market_context: str = "") -> s
     lines.append("**判定基準**: 🟢割安(スコア60+) / 🟡適正(スコア30-59) / 🔴割高(スコア30未満) / ⚪不足(データ取得失敗)")
     lines.append("**データソース**: X (Twitter) トレンド → Yahoo Finance ファンダメンタルズ")
 
+    _append_annotation_footer(lines, results)
     return "\n".join(lines)

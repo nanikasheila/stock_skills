@@ -12,7 +12,7 @@ from typing import Optional
 
 from src.core.common import is_cash as _is_cash
 from src.core.ticker_utils import (
-    SUFFIX_TO_COUNTRY as _SUFFIX_TO_COUNTRY,
+    SUFFIX_TO_REGION as _SUFFIX_TO_COUNTRY,
     SUFFIX_TO_CURRENCY as _SUFFIX_TO_CURRENCY,
     cash_currency as _cash_currency,
     infer_country as _infer_country,
@@ -22,6 +22,7 @@ from src.core.ticker_utils import (
 # CSV path (default)
 DEFAULT_CSV_PATH = os.path.join(
     os.path.dirname(__file__),
+    "..",
     "..",
     "..",
     ".claude",
@@ -511,7 +512,7 @@ def get_structure_analysis(csv_path: str, client) -> dict:
             "risk_level": str,
         }
     """
-    from src.core.concentration import analyze_concentration
+    from src.core.portfolio.concentration import analyze_concentration
 
     # Get snapshot first (this also fetches current prices and FX rates)
     snapshot = get_snapshot(csv_path, client)
@@ -569,6 +570,59 @@ def get_structure_analysis(csv_path: str, client) -> dict:
 # ---------------------------------------------------------------------------
 # Merge positions (KIK-376: What-If simulation)
 # ---------------------------------------------------------------------------
+
+
+def get_portfolio_shareholder_return(csv_path: str, client) -> dict:
+    """Calculate weighted-average shareholder return for the portfolio.
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to portfolio CSV.
+    client
+        yahoo_client module (must expose ``get_stock_detail``).
+
+    Returns
+    -------
+    dict
+        Keys: positions (list of {symbol, rate, market_value}),
+        weighted_avg_rate (float or None).
+    """
+    from src.core.screening.indicators import calculate_shareholder_return
+
+    holdings = load_portfolio(csv_path)
+    if not holdings:
+        return {"positions": [], "weighted_avg_rate": None}
+
+    total_mv = 0.0
+    weighted_rate = 0.0
+    position_returns: list[dict] = []
+
+    for h in holdings:
+        symbol = h["symbol"]
+        if _is_cash(symbol):
+            continue
+        detail = client.get_stock_detail(symbol)
+        if detail is None:
+            continue
+        sr = calculate_shareholder_return(detail)
+        rate = sr.get("total_return_rate")
+        price = detail.get("price") or 0
+        mv = price * h["shares"]
+        if rate is not None and mv > 0:
+            position_returns.append({
+                "symbol": symbol,
+                "rate": rate,
+                "market_value": mv,
+            })
+            weighted_rate += rate * mv
+            total_mv += mv
+
+    avg_rate = weighted_rate / total_mv if total_mv > 0 else None
+    return {
+        "positions": sorted(position_returns, key=lambda x: -x["rate"]),
+        "weighted_avg_rate": avg_rate,
+    }
 
 
 def merge_positions(

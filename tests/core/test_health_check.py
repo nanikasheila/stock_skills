@@ -943,3 +943,265 @@ class TestCrossEventAlerts:
         hist = pd.DataFrame({"Close": prices, "Volume": [1000] * 201})
         result = check_trend_health(hist)
         assert result["cross_signal"] == "none"
+
+
+# ===================================================================
+# Value trap detection tests (KIK-381)
+# ===================================================================
+
+from src.core.health_check import _detect_value_trap
+
+
+class TestDetectValueTrap:
+    """Tests for _detect_value_trap() (KIK-381)."""
+
+    def test_condition_a_low_per_negative_growth(self):
+        stock = {"per": 5.0, "eps_growth": -0.10}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is True
+        assert "低PERだが利益減少中" in result["reasons"]
+
+    def test_condition_b_low_per_revenue_decline(self):
+        stock = {"per": 8.0, "eps_growth": -0.08, "revenue_growth": -0.05}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is True
+        assert "低PER+売上減少トレンド" in result["reasons"]
+
+    def test_condition_c_low_pbr_low_roe(self):
+        stock = {"pbr": 0.6, "roe": 0.03, "eps_growth": -0.05}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is True
+        assert "低PBRだがROE低下・利益減少" in result["reasons"]
+
+    def test_no_trap_healthy_stock(self):
+        stock = {"per": 8.0, "eps_growth": 0.10, "revenue_growth": 0.05}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is False
+        assert result["reasons"] == []
+
+    def test_no_trap_high_per(self):
+        stock = {"per": 20.0, "eps_growth": -0.10}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is False
+
+    def test_none_values(self):
+        result = _detect_value_trap({})
+        assert result["is_trap"] is False
+        assert result["reasons"] == []
+
+    def test_none_stock_detail(self):
+        result = _detect_value_trap(None)
+        assert result["is_trap"] is False
+
+    def test_tre_like_data(self):
+        """TRE actual data: PER 5.22, eps_growth +2.43, revenue_growth -11.8%."""
+        stock = {"per": 5.22, "pbr": 1.02, "roe": 0.177, "eps_growth": 2.43, "revenue_growth": -0.118}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is True
+        assert "低PER+売上減少トレンド" in result["reasons"]
+
+    def test_condition_b_positive_eps_revenue_decline(self):
+        """Revenue declining with positive EPS should still trigger (cost-cutting trap)."""
+        stock = {"per": 7.0, "eps_growth": 1.5, "revenue_growth": -0.10}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is True
+        assert "低PER+売上減少トレンド" in result["reasons"]
+        assert "低PERだが利益減少中" not in result["reasons"]  # EPS is positive
+
+    def test_multiple_conditions_deduplicated(self):
+        """Conditions A+B overlap: reasons should be deduplicated."""
+        stock = {"per": 5.0, "eps_growth": -0.10, "revenue_growth": -0.05}
+        result = _detect_value_trap(stock)
+        assert result["is_trap"] is True
+        assert len(result["reasons"]) == len(set(result["reasons"]))
+
+
+# ===================================================================
+# Return stability alert integration tests (KIK-403)
+# ===================================================================
+
+
+class TestReturnStabilityAlertIntegration:
+    """Tests for shareholder return stability in compute_alert_level() (KIK-403)."""
+
+    def _healthy_trend(self):
+        return {
+            "trend": "上昇",
+            "price_above_sma50": True,
+            "dead_cross": False,
+            "rsi_drop": False,
+            "sma50_approaching_sma200": False,
+            "cross_signal": "none",
+            "days_since_cross": None,
+            "cross_date": None,
+        }
+
+    def _healthy_change(self):
+        return {"quality_label": "良好"}
+
+    def test_temporary_escalates_to_early_warning(self):
+        """stability='temporary' should escalate from NONE to EARLY_WARNING."""
+        stability = {
+            "stability": "temporary",
+            "label": "⚠️ 一時的高還元",
+            "latest_rate": 0.12,
+            "avg_rate": 0.06,
+            "reason": "前年比2.0倍に急増",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_EARLY_WARNING
+        assert any("一時的高還元" in r for r in result["reasons"])
+
+    def test_temporary_does_not_downgrade_higher_alert(self):
+        """stability='temporary' should not downgrade CAUTION to EARLY_WARNING."""
+        change = {"quality_label": "複数悪化"}
+        stability = {
+            "stability": "temporary",
+            "label": "⚠️ 一時的高還元",
+            "latest_rate": 0.12,
+            "avg_rate": 0.06,
+            "reason": "前年比2.0倍に急増",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), change,
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_CAUTION
+
+    def test_decreasing_adds_reason_without_escalation(self):
+        """stability='decreasing' adds reason but stays NONE."""
+        stability = {
+            "stability": "decreasing",
+            "label": "📉 減少傾向",
+            "latest_rate": 0.02,
+            "avg_rate": 0.04,
+            "reason": "3年連続減少",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_NONE
+        assert any("還元率が減少" in r for r in result["reasons"])
+
+    def test_stable_no_effect(self):
+        """stability='stable' should not affect alert level or reasons."""
+        stability = {
+            "stability": "stable",
+            "label": "✅ 安定高還元",
+            "latest_rate": 0.06,
+            "avg_rate": 0.06,
+            "reason": "3年平均6.0%で安定",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_NONE
+        assert result["reasons"] == []
+
+    def test_increasing_no_effect(self):
+        """stability='increasing' should not affect alert level or reasons."""
+        stability = {
+            "stability": "increasing",
+            "label": "📈 増加傾向",
+            "latest_rate": 0.08,
+            "avg_rate": 0.06,
+            "reason": "3年連続増加",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_NONE
+        assert result["reasons"] == []
+
+    def test_no_data_no_effect(self):
+        """stability='no_data' should not affect alert level."""
+        stability = {
+            "stability": "no_data",
+            "label": "-",
+            "latest_rate": None,
+            "avg_rate": None,
+            "reason": None,
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_NONE
+
+    def test_none_stability_no_effect(self):
+        """return_stability=None should not affect alert level (backward compat)."""
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=None,
+        )
+        assert result["level"] == ALERT_NONE
+
+    def test_temporary_plus_value_trap_both_reasons(self):
+        """Temporary return + value trap should both contribute reasons."""
+        stability = {
+            "stability": "temporary",
+            "label": "⚠️ 一時的高還元",
+            "latest_rate": 0.12,
+            "avg_rate": 0.06,
+            "reason": "前年比2.0倍に急増",
+        }
+        stock_detail = {"per": 5.0, "eps_growth": -0.10}
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            stock_detail=stock_detail,
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_EARLY_WARNING
+        assert any("一時的高還元" in r for r in result["reasons"])
+        assert any("低PER" in r for r in result["reasons"])
+
+    def test_single_high_no_escalation(self):
+        """stability='single_high' should not escalate alert level."""
+        stability = {
+            "stability": "single_high",
+            "label": "💰 高還元",
+            "latest_rate": 0.08,
+            "avg_rate": 0.08,
+            "reason": "1年データ（8.0%）",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_NONE
+
+    def test_single_moderate_no_escalation(self):
+        """stability='single_moderate' should not escalate alert level."""
+        stability = {
+            "stability": "single_moderate",
+            "label": "💰 還元あり",
+            "latest_rate": 0.03,
+            "avg_rate": 0.03,
+            "reason": "1年データ（3.0%）",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_NONE
+
+    def test_single_low_no_escalation(self):
+        """stability='single_low' should not escalate alert level."""
+        stability = {
+            "stability": "single_low",
+            "label": "➖ 低還元",
+            "latest_rate": 0.01,
+            "avg_rate": 0.01,
+            "reason": "1年データ（1.0%）",
+        }
+        result = compute_alert_level(
+            self._healthy_trend(), self._healthy_change(),
+            return_stability=stability,
+        )
+        assert result["level"] == ALERT_NONE

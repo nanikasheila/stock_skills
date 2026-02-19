@@ -8,7 +8,7 @@ Uses a temp CSV approach to leverage existing csv_path-based functions.
 import os
 import tempfile
 
-from src.core.portfolio_manager import (
+from src.core.portfolio.portfolio_manager import (
     get_fx_rates,
     get_snapshot,
     get_structure_analysis,

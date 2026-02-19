@@ -1,0 +1,24 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    environment:
+      NEO4J_AUTH: neo4j/password
+
+  # KIK-420: Text Embeddings Inference for vector search
+  embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9
+    platform: linux/amd64
+    ports:
+      - "8081:80"
+    volumes:
+      - ./data/models:/data
+    command: --model-id intfloat/multilingual-e5-small
+
+volumes:
+  neo4j_data:
+    name: stock-skills-neo4j

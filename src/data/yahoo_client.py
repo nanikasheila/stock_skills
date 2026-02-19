@@ -265,6 +265,52 @@ def _try_get_history(df, field_names: list[str], max_periods: int = 4) -> list[f
         return []
 
 
+def _build_dividend_history_from_actions(
+    ticker, shares_outstanding, max_years: int = 4
+) -> tuple:
+    """Build dividend history from ticker.dividends as a fallback (KIK-388).
+
+    When cashflow does not contain dividend payment history, use per-share
+    dividend actions grouped by calendar year and multiplied by
+    shares_outstanding to estimate total amounts.
+
+    Returns
+    -------
+    tuple[list[float], list[int]]
+        (dividend_amounts, fiscal_years) both in latest-first order.
+        Amounts are negative (cash outflow convention matching cashflow).
+        Returns ([], []) if data is insufficient.
+    """
+    try:
+        if shares_outstanding is None or shares_outstanding <= 0:
+            return [], []
+
+        divs = ticker.dividends
+        if divs is None or len(divs) == 0:
+            return [], []
+
+        # Group by calendar year, sum per-share dividends
+        yearly = divs.groupby(divs.index.year).sum()
+        if len(yearly) == 0:
+            return [], []
+
+        # Take most recent max_years, sorted latest-first
+        years_sorted = sorted(yearly.index, reverse=True)[:max_years]
+
+        amounts: list = []
+        fiscal_years: list = []
+        for year in years_sorted:
+            per_share_total = float(yearly.loc[year])
+            if per_share_total > 0:
+                # Negative convention (cash outflow) to match cashflow format
+                amounts.append(-(per_share_total * shares_outstanding))
+                fiscal_years.append(int(year))
+
+        return amounts, fiscal_years
+    except Exception:
+        return [], []
+
+
 # ---------------------------------------------------------------------------
 # get_stock_detail
 # ---------------------------------------------------------------------------
@@ -397,6 +443,17 @@ def get_stock_detail(symbol: str) -> Optional[dict]:
                 pass
         except Exception:
             pass
+
+        # KIK-388: Fallback to ticker.dividends when cashflow dividend history is sparse
+        if len(dividend_paid_history) < 2:
+            shares_out = _safe_get(ticker.info, "sharesOutstanding")
+            fb_amounts, fb_years = _build_dividend_history_from_actions(
+                ticker, shares_out
+            )
+            if len(fb_amounts) >= 2:
+                dividend_paid_history = fb_amounts
+                if not cashflow_fiscal_years:
+                    cashflow_fiscal_years = fb_years
 
         # --- Income statement: EPS, net income, revenue/NI history ---
         eps_current: Optional[float] = None
@@ -655,6 +712,103 @@ def get_price_history(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]
     except Exception as e:
         print(f"[yahoo_client] Error fetching price history for {symbol}: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Macro Indicators (KIK-396)
+# ---------------------------------------------------------------------------
+
+MACRO_TICKERS = {
+    "S&P500": "^GSPC",
+    "日経平均": "^N225",
+    "VIX": "^VIX",
+    "米10年債": "^TNX",
+    "USD/JPY": "JPY=X",
+    "EUR/USD": "EURUSD=X",
+    "原油(WTI)": "CL=F",
+    "金": "GC=F",
+}
+
+# Tickers where change is expressed as point difference, not percentage
+_POINT_DIFF_TICKERS = {"^VIX", "^TNX"}
+
+
+def get_macro_indicators() -> list[dict]:
+    """Fetch macro economic indicators (8 tickers).
+
+    Returns a list of dicts with keys:
+        name, symbol, price, daily_change, weekly_change, is_point_diff.
+
+    ``daily_change`` and ``weekly_change`` are percentage changes (0.01 = 1%)
+    for normal tickers, or raw point differences for VIX / bond yields
+    (``is_point_diff=True``).
+
+    No caching is applied because freshness is important.
+    A 1-second sleep is used per ticker for rate-limit compliance.
+    """
+    results: list[dict] = []
+
+    for name, symbol in MACRO_TICKERS.items():
+        try:
+            time.sleep(1)
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="5d")
+            if hist is None or hist.empty or "Close" not in hist.columns:
+                results.append({
+                    "name": name,
+                    "symbol": symbol,
+                    "price": None,
+                    "daily_change": None,
+                    "weekly_change": None,
+                    "is_point_diff": symbol in _POINT_DIFF_TICKERS,
+                })
+                continue
+
+            closes = hist["Close"].dropna()
+            if len(closes) == 0:
+                results.append({
+                    "name": name,
+                    "symbol": symbol,
+                    "price": None,
+                    "daily_change": None,
+                    "weekly_change": None,
+                    "is_point_diff": symbol in _POINT_DIFF_TICKERS,
+                })
+                continue
+
+            latest = float(closes.iloc[-1])
+            is_point = symbol in _POINT_DIFF_TICKERS
+
+            # Daily change
+            daily_change = None
+            if len(closes) >= 2:
+                prev = float(closes.iloc[-2])
+                if is_point:
+                    daily_change = latest - prev
+                elif prev != 0:
+                    daily_change = (latest - prev) / prev
+
+            # Weekly change (oldest available in 5d window)
+            weekly_change = None
+            oldest = float(closes.iloc[0])
+            if is_point:
+                weekly_change = latest - oldest
+            elif oldest != 0:
+                weekly_change = (latest - oldest) / oldest
+
+            results.append({
+                "name": name,
+                "symbol": symbol,
+                "price": latest,
+                "daily_change": daily_change,
+                "weekly_change": weekly_change,
+                "is_point_diff": is_point,
+            })
+        except Exception as e:
+            print(f"[yahoo_client] Error fetching macro indicator {name}: {e}")
+            continue
+
+    return results
 
 
 # ---------------------------------------------------------------------------

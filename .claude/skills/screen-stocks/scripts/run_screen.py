@@ -14,8 +14,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 from src.data import yahoo_client
-from src.core.screener import ValueScreener, QueryScreener, PullbackScreener, AlphaScreener, TrendingScreener
-from src.output.formatter import format_markdown, format_query_markdown, format_pullback_markdown, format_alpha_markdown, format_trending_markdown
+from src.core.screening.screener import ValueScreener, QueryScreener, PullbackScreener, AlphaScreener, TrendingScreener, GrowthScreener
+from src.output.formatter import format_markdown, format_query_markdown, format_pullback_markdown, format_alpha_markdown, format_trending_markdown, format_growth_markdown
 from src.markets.japan import JapanMarket
 from src.markets.us import USMarket
 from src.markets.asean import ASEANMarket
@@ -25,6 +25,24 @@ try:
     HAS_HISTORY = True
 except ImportError:
     HAS_HISTORY = False
+
+try:
+    from src.output.formatter import format_shareholder_return_markdown
+    HAS_SR_FORMAT = True
+except ImportError:
+    HAS_SR_FORMAT = False
+
+try:
+    from src.data.graph_query import get_screening_frequency
+    HAS_GRAPH_QUERY = True
+except ImportError:
+    HAS_GRAPH_QUERY = False
+
+try:
+    from src.data.screen_annotator import annotate_results
+    HAS_ANNOTATOR = True
+except ImportError:
+    HAS_ANNOTATOR = False
 
 
 # Legacy market classes
@@ -91,6 +109,36 @@ VALID_SECTORS = [
 ]
 
 
+def _annotate(results):
+    """Apply screen annotations (KIK-418/419). Returns (results, excluded_count)."""
+    if not HAS_ANNOTATOR or not results:
+        return results, 0
+    try:
+        return annotate_results(results)
+    except Exception:
+        return results, 0
+
+
+def _print_recurring_picks(results):
+    """Print recurring picks highlight if graph data available (KIK-406)."""
+    if not HAS_GRAPH_QUERY or not results:
+        return
+    try:
+        symbols = [r.get("symbol") for r in results if r.get("symbol")]
+        if not symbols:
+            return
+        freq = get_screening_frequency(symbols)
+        # Only show symbols that appeared 2+ times (current run counts as new)
+        recurring = {s: c for s, c in freq.items() if c >= 2}
+        if recurring:
+            print("**再出現銘柄** (過去のスクリーニングにも登場):")
+            for sym, cnt in sorted(recurring.items(), key=lambda x: -x[1]):
+                print(f"  - {sym}: 過去{cnt}回出現")
+            print()
+    except Exception:
+        pass
+
+
 def run_trending_mode(args):
     """Run trending stock screening using Grok X search."""
     try:
@@ -116,8 +164,13 @@ def run_trending_mode(args):
         region=region_key, theme=args.theme, top_n=args.top,
     )
 
+    results, excluded = _annotate(results)
     print(f"Step 2: {len(results)}銘柄のファンダメンタルズを取得・スコアリング完了\n")
+    if excluded:
+        print(f"※ 直近売却済み {excluded}銘柄を除外\n")
     print(format_trending_markdown(results, market_context))
+
+    _print_recurring_picks(results)
 
     if HAS_HISTORY and results:
         try:
@@ -148,11 +201,38 @@ def run_query_mode(args):
             print(f"\n## {region_name} - 押し目買い スクリーニング結果\n")
             print("Step 1: ファンダメンタルズ条件で絞り込み中...")
             results = screener.screen(region=region_code, top_n=args.top)
+            results, excluded = _annotate(results)
             print(f"Step 2-3 完了: {len(results)}銘柄が条件に合致\n")
+            if excluded:
+                print(f"※ 直近売却済み {excluded}銘柄を除外\n")
             print(format_pullback_markdown(results))
+            _print_recurring_picks(results)
             if HAS_HISTORY and results:
                 try:
                     save_screening(preset="pullback", region=region_code, results=results)
+                except Exception as e:
+                    print(f"Warning: 履歴保存失敗: {e}", file=sys.stderr)
+            print()
+        return
+
+    # growth preset uses GrowthScreener
+    if args.preset == "growth":
+        screener = GrowthScreener(yahoo_client)
+        for region_code in regions:
+            region_name = REGION_NAMES.get(region_code, region_code.upper())
+            sector_label = f" [{args.sector}]" if args.sector else ""
+            print(f"\n## {region_name} - 純成長株{sector_label} スクリーニング結果\n")
+            print("Step 1: 成長条件で絞り込み中 (EquityQuery)...")
+            results = screener.screen(region=region_code, top_n=args.top, sector=args.sector)
+            results, excluded = _annotate(results)
+            print(f"Step 2: {len(results)}銘柄のEPS成長率を取得・ソート完了\n")
+            if excluded:
+                print(f"※ 直近売却済み {excluded}銘柄を除外\n")
+            print(format_growth_markdown(results))
+            _print_recurring_picks(results)
+            if HAS_HISTORY and results:
+                try:
+                    save_screening(preset="growth", region=region_code, results=results, sector=args.sector)
                 except Exception as e:
                     print(f"Warning: 履歴保存失敗: {e}", file=sys.stderr)
             print()
@@ -166,8 +246,12 @@ def run_query_mode(args):
             print(f"\n## {region_name} - アルファシグナル スクリーニング結果\n")
             print("Step 1: 割安足切り (EquityQuery)...")
             results = screener.screen(region=region_code, top_n=args.top)
+            results, excluded = _annotate(results)
             print(f"Step 2-4 完了: {len(results)}銘柄がアルファ条件に合致\n")
+            if excluded:
+                print(f"※ 直近売却済み {excluded}銘柄を除外\n")
             print(format_alpha_markdown(results))
+            _print_recurring_picks(results)
             if HAS_HISTORY and results:
                 try:
                     save_screening(preset="alpha", region=region_code, results=results)
@@ -190,9 +274,13 @@ def run_query_mode(args):
                 top_n=args.top,
                 with_pullback=True,
             )
+            results, excluded = _annotate(results)
             pullback_label = " + 押し目フィルタ"
             print(f"\n## {region_name} - {args.preset}{sector_label}{pullback_label} スクリーニング結果 (EquityQuery)\n")
+            if excluded:
+                print(f"※ 直近売却済み {excluded}銘柄を除外\n")
             print(format_pullback_markdown(results))
+            _print_recurring_picks(results)
             if HAS_HISTORY and results:
                 try:
                     save_screening(preset=args.preset, region=region_code, results=results, sector=args.sector)
@@ -205,8 +293,15 @@ def run_query_mode(args):
                 sector=args.sector,
                 top_n=args.top,
             )
+            results, excluded = _annotate(results)
             print(f"\n## {region_name} - {args.preset}{sector_label} スクリーニング結果 (EquityQuery)\n")
-            print(format_query_markdown(results))
+            if excluded:
+                print(f"※ 直近売却済み {excluded}銘柄を除外\n")
+            if args.preset == "shareholder-return" and HAS_SR_FORMAT:
+                print(format_shareholder_return_markdown(results))
+            else:
+                print(format_query_markdown(results))
+            _print_recurring_picks(results)
             if HAS_HISTORY and results:
                 try:
                     save_screening(preset=args.preset, region=region_code, results=results, sector=args.sector)
@@ -246,7 +341,10 @@ def run_legacy_mode(args):
 
         screener = ValueScreener(client, market)
         results = screener.screen(preset=args.preset, top_n=args.top)
+        results, excluded = _annotate(results)
         print(f"\n## {market.name} - {args.preset} スクリーニング結果\n")
+        if excluded:
+            print(f"※ 直近売却済み {excluded}銘柄を除外\n")
         print(format_markdown(results))
         if HAS_HISTORY and results:
             try:
@@ -273,7 +371,7 @@ def main():
     parser.add_argument(
         "--preset",
         default="value",
-        choices=["value", "high-dividend", "growth-value", "deep-value", "quality", "pullback", "alpha", "trending", "long-term", "shareholder-return"],
+        choices=["value", "high-dividend", "growth", "growth-value", "deep-value", "quality", "pullback", "alpha", "trending", "long-term", "shareholder-return"],
     )
     parser.add_argument(
         "--sector",
@@ -330,6 +428,10 @@ def main():
 
     if args.preset == "alpha" and args.mode == "legacy":
         print("Note: alpha preset requires query mode. Switching to --mode query.")
+        args.mode = "query"
+
+    if args.preset == "growth" and args.mode == "legacy":
+        print("Note: growth preset requires query mode. Switching to --mode query.")
         args.mode = "query"
 
     if args.preset == "trending" and args.mode == "legacy":

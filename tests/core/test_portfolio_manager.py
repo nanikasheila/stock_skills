@@ -1,10 +1,10 @@
-"""Tests for src.core.portfolio_manager module."""
+"""Tests for src.core.portfolio.portfolio_manager module."""
 
 import os
 
 import pytest
 
-from src.core.portfolio_manager import (
+from src.core.portfolio.portfolio_manager import (
     load_portfolio,
     save_portfolio,
     add_position,
@@ -424,7 +424,7 @@ class TestInferCountryCash:
 class TestGetSnapshotCash:
     def test_cash_position_skips_api(self, csv_path):
         """Cash positions should not trigger API calls."""
-        from src.core.portfolio_manager import get_snapshot
+        from src.core.portfolio.portfolio_manager import get_snapshot
 
         portfolio = [
             {"symbol": "JPY.CASH", "shares": 1, "cost_price": 500000.0,
@@ -455,3 +455,74 @@ class TestGetSnapshotCash:
         assert pos["pnl"] == 0.0
         assert pos["pnl_pct"] == 0.0
         assert not client.called
+
+
+class TestGetPortfolioShareholderReturn:
+    """Tests for get_portfolio_shareholder_return (KIK-393)."""
+
+    def test_basic(self, tmp_path):
+        from src.core.portfolio.portfolio_manager import get_portfolio_shareholder_return
+
+        csv = tmp_path / "pf.csv"
+        csv.write_text(
+            "symbol,shares,cost_price,cost_currency,purchase_date,memo\n"
+            "7203.T,100,2800,JPY,2025-01-01,Toyota\n"
+            "AAPL,10,180,USD,2025-01-01,Apple\n"
+        )
+
+        class FakeClient:
+            def get_stock_detail(self, symbol):
+                if symbol == "7203.T":
+                    return {
+                        "price": 3000,
+                        "market_cap": 30_000_000_000_000,
+                        "dividend_paid": -500_000_000_000,
+                        "stock_repurchase": -200_000_000_000,
+                    }
+                if symbol == "AAPL":
+                    return {
+                        "price": 200,
+                        "market_cap": 3_000_000_000_000,
+                        "dividend_paid": -50_000_000_000,
+                        "stock_repurchase": -100_000_000_000,
+                    }
+                return None
+
+        result = get_portfolio_shareholder_return(str(csv), FakeClient())
+        assert result["weighted_avg_rate"] is not None
+        assert len(result["positions"]) == 2
+        # Positions are sorted by rate descending
+        assert result["positions"][0]["rate"] >= result["positions"][1]["rate"]
+
+    def test_empty_portfolio(self, tmp_path):
+        from src.core.portfolio.portfolio_manager import get_portfolio_shareholder_return
+
+        csv = tmp_path / "pf.csv"
+        csv.write_text(
+            "symbol,shares,cost_price,cost_currency,purchase_date,memo\n"
+        )
+
+        class FakeClient:
+            def get_stock_detail(self, symbol):
+                return None
+
+        result = get_portfolio_shareholder_return(str(csv), FakeClient())
+        assert result["positions"] == []
+        assert result["weighted_avg_rate"] is None
+
+    def test_cash_only(self, tmp_path):
+        from src.core.portfolio.portfolio_manager import get_portfolio_shareholder_return
+
+        csv = tmp_path / "pf.csv"
+        csv.write_text(
+            "symbol,shares,cost_price,cost_currency,purchase_date,memo\n"
+            "JPY.CASH,1000000,1,JPY,,\n"
+        )
+
+        class FakeClient:
+            def get_stock_detail(self, symbol):
+                return None
+
+        result = get_portfolio_shareholder_return(str(csv), FakeClient())
+        assert result["positions"] == []
+        assert result["weighted_avg_rate"] is None

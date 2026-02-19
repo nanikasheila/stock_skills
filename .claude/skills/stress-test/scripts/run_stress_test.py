@@ -19,17 +19,18 @@ from typing import Optional
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 from src.data import yahoo_client
-from src.core.concentration import analyze_concentration, compute_hhi
+from src.core.portfolio.concentration import analyze_concentration, compute_hhi
+from src.core.ticker_utils import infer_country as _infer_country
 
 # Team 2 module
 try:
-    from src.core.shock_sensitivity import analyze_stock_sensitivity
+    from src.core.risk.shock_sensitivity import analyze_stock_sensitivity
 except ImportError:
     analyze_stock_sensitivity = None
 
 # Team 3 modules
 try:
-    from src.core.scenario_analysis import resolve_scenario, analyze_portfolio_scenario
+    from src.core.risk.scenario_analysis import resolve_scenario, analyze_portfolio_scenario
 except ImportError:
     resolve_scenario = None
     analyze_portfolio_scenario = None
@@ -41,7 +42,7 @@ except ImportError:
 
 # KIK-352 modules
 try:
-    from src.core.correlation import (
+    from src.core.risk.correlation import (
         compute_correlation_matrix,
         find_high_correlation_pairs,
         decompose_factors,
@@ -56,49 +57,10 @@ except ImportError:
     MACRO_FACTORS = []
 
 try:
-    from src.core.recommender import generate_recommendations
+    from src.core.risk.recommender import generate_recommendations
 except ImportError:
     generate_recommendations = None
 
-
-# ---------------------------------------------------------------------------
-# Country inference from ticker suffix
-# ---------------------------------------------------------------------------
-
-_SUFFIX_TO_COUNTRY = {
-    ".T": "Japan",
-    ".SI": "Singapore",
-    ".BK": "Thailand",
-    ".KL": "Malaysia",
-    ".JK": "Indonesia",
-    ".PS": "Philippines",
-    ".HK": "Hong Kong",
-    ".KS": "South Korea",
-    ".KQ": "South Korea",
-    ".TW": "Taiwan",
-    ".TWO": "Taiwan",
-    ".SS": "China",
-    ".SZ": "China",
-    ".L": "United Kingdom",
-    ".DE": "Germany",
-    ".PA": "France",
-    ".TO": "Canada",
-    ".AX": "Australia",
-    ".SA": "Brazil",
-    ".NS": "India",
-    ".BO": "India",
-}
-
-
-def _infer_country(symbol: str) -> str:
-    """Infer the country/region from the ticker symbol suffix."""
-    for suffix, country in _SUFFIX_TO_COUNTRY.items():
-        if symbol.upper().endswith(suffix.upper()):
-            return country
-    # No suffix typically means US stock
-    if "." not in symbol:
-        return "United States"
-    return "Unknown"
 
 
 # ---------------------------------------------------------------------------

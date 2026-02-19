@@ -17,6 +17,11 @@ import pandas as pd
 from typing import Optional
 
 from src.core.common import is_cash as _is_cash, is_etf as _is_etf
+from src.core.screening.indicators import (
+    calculate_shareholder_return,
+    calculate_shareholder_return_history,
+    assess_return_stability,
+)
 
 # Alert level constants
 ALERT_NONE = "none"
@@ -70,7 +75,7 @@ def check_trend_health(hist: Optional[pd.DataFrame]) -> dict:
 
     close = hist["Close"]
 
-    from src.core.technicals import compute_rsi
+    from src.core.screening.technicals import compute_rsi
 
     sma50 = close.rolling(window=50).mean()
     sma200 = close.rolling(window=200).mean()
@@ -181,7 +186,7 @@ def check_change_quality(stock_detail: dict) -> dict:
             "is_etf": True,
         }
 
-    from src.core.alpha import compute_change_score
+    from src.core.screening.alpha import compute_change_score
 
     result = compute_change_score(stock_detail)
 
@@ -211,6 +216,22 @@ def check_change_quality(stock_detail: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _finite_or_none(v):
+    """Return v if finite number, else None."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Long-term investment suitability thresholds (KIK-371)
 # ---------------------------------------------------------------------------
 _LT_ROE_HIGH = 0.15
@@ -221,16 +242,23 @@ _LT_PER_OVERVALUED = 40
 _LT_PER_SAFE = 25
 
 
-def check_long_term_suitability(stock_detail: dict) -> dict:
+def check_long_term_suitability(
+    stock_detail: dict,
+    shareholder_return_data: dict | None = None,
+) -> dict:
     """Evaluate long-term holding suitability from fundamental data.
 
-    Classifies a holding based on ROE, EPS growth, dividend yield, and PER.
+    Classifies a holding based on ROE, EPS growth, shareholder return, and PER.
 
     Parameters
     ----------
     stock_detail : dict
         From yahoo_client.get_stock_detail(). Expected keys:
         roe, eps_growth, dividend_yield, per.
+    shareholder_return_data : dict, optional
+        From calculate_shareholder_return(). When provided,
+        total_return_rate (dividend + buyback) is used instead of
+        dividend_yield alone.
 
     Returns
     -------
@@ -261,16 +289,6 @@ def check_long_term_suitability(stock_detail: dict) -> dict:
             "score": 0,
             "summary": "ETF",
         }
-
-    def _finite_or_none(v):
-        """Return v if finite number, else None."""
-        if v is None:
-            return None
-        try:
-            f = float(v)
-            return None if (math.isnan(f) or math.isinf(f)) else f
-        except (TypeError, ValueError):
-            return None
 
     roe = _finite_or_none(stock_detail.get("roe"))
     eps_growth = _finite_or_none(stock_detail.get("eps_growth"))
@@ -305,14 +323,23 @@ def check_long_term_suitability(stock_detail: dict) -> dict:
         eps_growth_status = "declining"
         eps_score = 0
 
-    # --- Dividend classification ---
-    if dividend_yield is None:
+    # --- Shareholder return classification (KIK-403) ---
+    # Prefer total return rate (dividend + buyback) if available
+    total_return_rate = None
+    if shareholder_return_data is not None:
+        total_return_rate = _finite_or_none(
+            shareholder_return_data.get("total_return_rate")
+        )
+    return_metric = total_return_rate if total_return_rate is not None else dividend_yield
+    _used_total_return = total_return_rate is not None
+
+    if return_metric is None:
         dividend_status = "unknown"
         div_score = 0
-    elif dividend_yield >= _LT_DIVIDEND_HIGH:
+    elif return_metric >= _LT_DIVIDEND_HIGH:
         dividend_status = "high"
         div_score = 1
-    elif dividend_yield > 0:
+    elif return_metric > 0:
         dividend_status = "medium"
         div_score = 0.5
     else:
@@ -356,7 +383,7 @@ def check_long_term_suitability(stock_detail: dict) -> dict:
     elif eps_growth_status == "declining":
         parts.append("EPS減少")
     if dividend_status == "high":
-        parts.append("高配当")
+        parts.append("高還元" if _used_total_return else "高配当")
     if per_risk == "overvalued":
         parts.append("割高PER")
     # Count unknown fields for summary
@@ -377,7 +404,16 @@ def check_long_term_suitability(stock_detail: dict) -> dict:
     }
 
 
-def compute_alert_level(trend_health: dict, change_quality: dict) -> dict:
+# Value trap detection extracted to src/core/value_trap.py (KIK-392)
+from src.core.value_trap import detect_value_trap as _detect_value_trap  # noqa: F401
+
+
+def compute_alert_level(
+    trend_health: dict,
+    change_quality: dict,
+    stock_detail=None,
+    return_stability: dict | None = None,
+) -> dict:
     """Compute 3-level alert from trend and change quality.
 
     Level priority: exit > caution > early_warning > none.
@@ -470,6 +506,32 @@ def compute_alert_level(trend_health: dict, change_quality: dict) -> dict:
             "- 上昇トレンド転換の可能性"
         )
 
+    # Value trap detection (KIK-381)
+    value_trap = _detect_value_trap(stock_detail)
+    if value_trap["is_trap"]:
+        for reason in value_trap["reasons"]:
+            if reason not in reasons:
+                reasons.append(reason)
+        # Escalate to at least EARLY_WARNING
+        if level == ALERT_NONE:
+            level = ALERT_EARLY_WARNING
+
+    # Shareholder return stability (KIK-403)
+    if return_stability is not None:
+        stability = return_stability.get("stability")
+        if stability == "temporary":
+            reason_text = return_stability.get("reason", "一時的高還元")
+            reason_str = f"一時的高還元の可能性（{reason_text}）"
+            if reason_str not in reasons:
+                reasons.append(reason_str)
+            if level == ALERT_NONE:
+                level = ALERT_EARLY_WARNING
+        elif stability == "decreasing":
+            reason_text = return_stability.get("reason", "還元率減少傾向")
+            reason_str = f"株主還元率が減少傾向（{reason_text}）"
+            if reason_str not in reasons:
+                reasons.append(reason_str)
+
     level_map = {
         ALERT_NONE: ("", "なし"),
         ALERT_EARLY_WARNING: ("\u26a1", "早期警告"),
@@ -506,7 +568,7 @@ def run_health_check(csv_path: str, client) -> dict:
     dict
         Keys: positions, alerts (non-none only), summary.
     """
-    from src.core.portfolio_manager import get_snapshot
+    from src.core.portfolio.portfolio_manager import get_snapshot
 
     snapshot = get_snapshot(csv_path, client)
     positions = snapshot.get("positions", [])
@@ -543,11 +605,25 @@ def run_health_check(csv_path: str, client) -> dict:
             stock_detail = {}
         change_quality = check_change_quality(stock_detail)
 
-        # 3. Alert level
-        alert = compute_alert_level(trend_health, change_quality)
+        # 3. Shareholder return stability (KIK-403)
+        sh_return = calculate_shareholder_return(stock_detail)
+        sh_history = calculate_shareholder_return_history(stock_detail)
+        sh_stability = assess_return_stability(sh_history)
 
-        # 4. Long-term suitability (KIK-371)
-        long_term = check_long_term_suitability(stock_detail)
+        # 4. Alert level
+        alert = compute_alert_level(
+            trend_health, change_quality,
+            stock_detail=stock_detail,
+            return_stability=sh_stability,
+        )
+
+        # 5. Long-term suitability (KIK-371, enhanced KIK-403)
+        long_term = check_long_term_suitability(
+            stock_detail, shareholder_return_data=sh_return,
+        )
+
+        # 6. Value trap detection (KIK-381)
+        value_trap = _detect_value_trap(stock_detail)
 
         result = {
             "symbol": symbol,
@@ -557,6 +633,9 @@ def run_health_check(csv_path: str, client) -> dict:
             "change_quality": change_quality,
             "alert": alert,
             "long_term": long_term,
+            "value_trap": value_trap,
+            "shareholder_return": sh_return,
+            "return_stability": sh_stability,
         }
         results.append(result)
 

@@ -3,30 +3,10 @@
 from datetime import datetime
 from typing import Optional
 
-
-# ---------------------------------------------------------------------------
-# Shared helpers (consistent with formatter.py / stress_formatter.py)
-# ---------------------------------------------------------------------------
-
-def _fmt_pct(value: Optional[float]) -> str:
-    """Format a decimal ratio as a percentage string (e.g. 0.035 -> '3.50%')."""
-    if value is None:
-        return "-"
-    return f"{value * 100:.2f}%"
-
-
-def _fmt_pct_sign(value: Optional[float]) -> str:
-    """Format a decimal ratio as a signed percentage (e.g. -0.12 -> '-12.00%')."""
-    if value is None:
-        return "-"
-    return f"{value * 100:+.2f}%"
-
-
-def _fmt_float(value: Optional[float], decimals: int = 2) -> str:
-    """Format a float with the given decimal places, or '-' if None."""
-    if value is None:
-        return "-"
-    return f"{value:.{decimals}f}"
+from src.output._format_helpers import fmt_pct as _fmt_pct
+from src.output._format_helpers import fmt_pct_sign as _fmt_pct_sign
+from src.output._format_helpers import fmt_float as _fmt_float
+from src.output._format_helpers import hhi_bar as _hhi_bar
 
 
 def _fmt_jpy(value: Optional[float]) -> str:
@@ -69,13 +49,6 @@ def _pnl_indicator(value: Optional[float]) -> str:
     elif value < 0:
         return "\u25bc"  # ▼
     return ""
-
-
-def _hhi_bar(hhi: float, width: int = 10) -> str:
-    """Render a simple text bar for HHI value (0-1 scale)."""
-    filled = int(round(hhi * width))
-    filled = max(0, min(filled, width))
-    return "[" + "#" * filled + "." * (width - filled) + "]"
 
 
 def _classify_hhi(hhi: float) -> str:
@@ -384,9 +357,9 @@ def format_health_check(health_data: dict) -> str:
     lines.append(
         "| \u9298\u67c4 | \u640d\u76ca | \u30c8\u30ec\u30f3\u30c9 "
         "| \u5909\u5316\u306e\u8cea | \u30a2\u30e9\u30fc\u30c8 "
-        "| \u9577\u671f\u9069\u6027 |"
+        "| \u9577\u671f\u9069\u6027 | \u9084\u5143\u5b89\u5b9a\u5ea6 |"
     )
-    lines.append("|:-----|-----:|:-------|:--------|:------------|:--------|")
+    lines.append("|:-----|-----:|:-------|:--------|:------------|:--------|:--------|")
 
     for pos in positions:
         symbol = pos.get("symbol", "-")
@@ -404,12 +377,22 @@ def format_health_check(health_data: dict) -> str:
         else:
             alert_str = "なし"
 
+        # Value trap indicator (KIK-381)
+        vt = pos.get("value_trap", {})
+        if vt.get("is_trap"):
+            alert_str += " \U0001fa64"
+
         # Long-term suitability (KIK-371)
         lt = pos.get("long_term", {})
         lt_label = lt.get("label", "-")
 
+        # Return stability (KIK-403)
+        rs = pos.get("return_stability", {})
+        rs_label = rs.get("label", "-") if rs else "-"
+
         lines.append(
-            f"| {symbol} | {pnl_str} | {trend} | {quality} | {alert_str} | {lt_label} |"
+            f"| {symbol} | {pnl_str} | {trend} | {quality} "
+            f"| {alert_str} | {lt_label} | {rs_label} |"
         )
 
     lines.append("")
@@ -477,6 +460,43 @@ def format_health_check(health_data: dict) -> str:
                     f"- \u9577\u671f\u9069\u6027: {lt_label}"
                     f"\uff08{lt_summary}\uff09"
                 )
+
+            # Value trap warning (KIK-381)
+            vt = pos.get("value_trap")
+            if vt and vt.get("is_trap"):
+                lines.append(
+                    f"- \U0001fa64 **\u30d0\u30ea\u30e5\u30fc\u30c8\u30e9\u30c3\u30d7\u5146\u5019**: "
+                    f"{', '.join(vt['reasons'])}"
+                )
+
+            # Shareholder return stability context (KIK-403)
+            rs = pos.get("return_stability")
+            if rs:
+                stability = rs.get("stability")
+                latest_pct = (rs.get("latest_rate") or 0) * 100
+                avg_pct = (rs.get("avg_rate") or 0) * 100
+                if stability == "temporary":
+                    lines.append(
+                        f"- \u26a0\ufe0f **\u4e00\u6642\u7684\u9ad8\u9084\u5143**: "
+                        f"{rs.get('reason', '')}"
+                        f"\uff08\u76f4\u8fd1 {latest_pct:.1f}%\u3001"
+                        f"\u5e73\u5747 {avg_pct:.1f}%\uff09"
+                    )
+                elif stability == "decreasing":
+                    lines.append(
+                        f"- \U0001f4c9 **\u682a\u4e3b\u9084\u5143\u6e1b\u5c11\u50be\u5411**: "
+                        f"{rs.get('reason', '')}"
+                    )
+                elif stability in ("stable", "increasing"):
+                    lines.append(
+                        f"- {rs.get('label', '')} "
+                        f"\uff08\u76f4\u8fd1 {latest_pct:.1f}%\uff09"
+                    )
+                elif stability and stability.startswith("single_"):
+                    lines.append(
+                        f"- {rs.get('label', '')} "
+                        f"\uff08{rs.get('reason', '')}\uff09"
+                    )
 
             # Action suggestion based on alert level
             level = alert.get("level", "none")
@@ -626,6 +646,54 @@ def format_return_estimate(estimate: dict) -> str:
     lines.append(f"\u7dcf\u8a55\u4fa1\u984d: {_fmt_jpy(total_value)}")
     lines.append("")
 
+    # --- Warning summary (KIK-390) ---
+    warnings = [
+        p for p in positions if p.get("value_trap_warning")
+    ]
+    if warnings:
+        lines.append("### \u26a0\ufe0f \u6ce8\u610f\u9298\u67c4")
+        lines.append("")
+        for w in warnings:
+            lines.append(f"- **{w['symbol']}**: {w['value_trap_warning']}")
+        lines.append("")
+
+    # --- TOP 3 / BOTTOM 3 (KIK-390) ---
+    ranked = [
+        p for p in positions
+        if p.get("base") is not None and p.get("method") != "no_data"
+    ]
+    ranked.sort(key=lambda p: p["base"], reverse=True)
+
+    if len(ranked) >= 2:
+        top_n = ranked[:3]
+        bottom_n = ranked[-3:] if len(ranked) >= 6 else ranked[-min(3, len(ranked)):]
+        # Deduplicate if overlap (small portfolios)
+        bottom_symbols = {p["symbol"] for p in bottom_n}
+        top_symbols = {p["symbol"] for p in top_n}
+
+        lines.append("### \U0001f51d \u671f\u5f85\u30ea\u30bf\u30fc\u30f3 TOP")
+        lines.append("")
+        for i, p in enumerate(top_n, 1):
+            count = p.get("analyst_count")
+            count_str = f" ({count}\u540d)" if count else ""
+            lines.append(
+                f"{i}. **{p['symbol']}** {_fmt_pct_sign(p['base'])}{count_str}"
+            )
+        lines.append("")
+
+        # Only show BOTTOM if there are stocks not already in TOP
+        bottom_only = [p for p in bottom_n if p["symbol"] not in top_symbols]
+        if bottom_only:
+            lines.append("### \U0001f4c9 \u671f\u5f85\u30ea\u30bf\u30fc\u30f3 BOTTOM")
+            lines.append("")
+            for i, p in enumerate(bottom_only, 1):
+                count = p.get("analyst_count")
+                count_str = f" ({count}\u540d)" if count else ""
+                lines.append(
+                    f"{i}. **{p['symbol']}** {_fmt_pct_sign(p['base'])}{count_str}"
+                )
+            lines.append("")
+
     # --- Per-stock details ---
     for pos in positions:
         symbol = pos.get("symbol", "-")
@@ -668,16 +736,10 @@ def format_return_estimate(estimate: dict) -> str:
 
         # News and sentiment sections (skip for no_data)
         if method != "no_data":
-            # News section
+            # News section - count only (KIK-390)
             news = pos.get("news", [])
             if news:
-                lines.append("\u3010\u30cb\u30e5\u30fc\u30b9\u3011")
-                for item in news[:5]:
-                    title = item.get("title", "")
-                    publisher = item.get("publisher", "")
-                    if title:
-                        pub_str = f" ({publisher})" if publisher else ""
-                        lines.append(f"  - {title}{pub_str}")
+                lines.append(f"\u3010\u30cb\u30e5\u30fc\u30b9\u3011{len(news)}\u4ef6")
 
             # X Sentiment section
             x_sentiment = pos.get("x_sentiment")
@@ -698,6 +760,11 @@ def format_return_estimate(estimate: dict) -> str:
                     f"\u30d9\u30fc\u30b9 {_fmt_pct_sign(base_r)} / "
                     f"\u697d\u89b3 {_fmt_pct_sign(opt)}"
                 )
+
+            # Value trap warning (KIK-385)
+            vt_warning = pos.get("value_trap_warning")
+            if vt_warning:
+                lines.append(f"  \U0001fa64 **\u30d0\u30ea\u30e5\u30fc\u30c8\u30e9\u30c3\u30d7\u5146\u5019**: {vt_warning}")
 
         lines.append("")
 
@@ -1217,4 +1284,37 @@ def format_rebalance_report(proposal: dict) -> str:
         )
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def format_shareholder_return_analysis(data: dict) -> str:
+    """Format portfolio shareholder return analysis as markdown.
+
+    Parameters
+    ----------
+    data : dict
+        Output of portfolio_manager.get_portfolio_shareholder_return().
+        Keys: positions, weighted_avg_rate.
+
+    Returns
+    -------
+    str
+        Markdown-formatted section.
+    """
+    positions = data.get("positions", [])
+    avg_rate = data.get("weighted_avg_rate")
+    if not positions:
+        return ""
+
+    lines: list[str] = []
+    lines.append("## 株主還元分析")
+    lines.append("")
+    lines.append("| 銘柄 | 総株主還元率 |")
+    lines.append("|:-----|-----:|")
+    for pr in positions:
+        lines.append(f"| {pr['symbol']} | {pr['rate'] * 100:.2f}% |")
+    lines.append("")
+    if avg_rate is not None:
+        lines.append(f"- **加重平均 総株主還元率**: {avg_rate * 100:.2f}%")
+        lines.append("")
     return "\n".join(lines)

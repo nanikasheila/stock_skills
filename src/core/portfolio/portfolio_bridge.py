@@ -12,14 +12,14 @@ from typing import Optional
 # Default portfolio CSV path (relative to the project root)
 _DEFAULT_CSV_PATH = os.path.join(
     os.path.dirname(__file__),
-    "..", "..",
+    "..", "..", "..",
     ".claude", "skills", "stock-portfolio", "data", "portfolio.csv",
 )
 
 # Stress test script path
 _STRESS_TEST_SCRIPT = os.path.join(
     os.path.dirname(__file__),
-    "..", "..",
+    "..", "..", "..",
     ".claude", "skills", "stress-test", "scripts", "run_stress_test.py",
 )
 
@@ -43,7 +43,7 @@ def _load_portfolio_csv(csv_path: str) -> list[dict]:
     """
     # Try portfolio_manager first (may be implemented later)
     try:
-        from src.core.portfolio_manager import load_portfolio as _pm_load
+        from src.core.portfolio.portfolio_manager import load_portfolio as _pm_load
         return _pm_load(csv_path)
     except (ImportError, ModuleNotFoundError):
         pass

@@ -151,7 +151,24 @@ def calculate_shareholder_return_history(stock: dict) -> list[dict]:
     fiscal_years: list[int] = stock.get("cashflow_fiscal_years") or []
 
     if not div_hist and not rep_hist:
-        return []
+        # Fallback: use single-period dividend_paid / stock_repurchase
+        div_raw = stock.get("dividend_paid")
+        rep_raw = stock.get("stock_repurchase")
+        if div_raw is None and rep_raw is None:
+            return []
+        dividend_paid = abs(div_raw) if div_raw is not None else None
+        stock_repurchase = abs(rep_raw) if rep_raw is not None else None
+        total = (dividend_paid or 0.0) + (stock_repurchase or 0.0)
+        total_rate = None
+        if market_cap is not None and market_cap > 0:
+            total_rate = total / market_cap
+        return [{
+            "fiscal_year": None,
+            "dividend_paid": dividend_paid,
+            "stock_repurchase": stock_repurchase,
+            "total_return_amount": total,
+            "total_return_rate": total_rate,
+        }]
 
     n = max(len(div_hist), len(rep_hist))
     results: list[dict] = []
@@ -180,6 +197,120 @@ def calculate_shareholder_return_history(stock: dict) -> list[dict]:
         })
 
     return results
+
+
+def assess_return_stability(history: list[dict]) -> dict:
+    """Assess shareholder return stability from multi-year history.
+
+    Takes the output of ``calculate_shareholder_return_history()`` and
+    classifies stability as one of:
+
+    - ``temporary``: Latest year surged (>=2x previous) — likely one-off
+    - ``increasing``: Rates rising year-over-year
+    - ``decreasing``: Rates falling year-over-year
+    - ``stable``: All years >= 5%
+    - ``mixed``: None of the above patterns
+    - ``single_high``: 1 year only, total return >= 5%
+    - ``single_moderate``: 1 year only, total return 2-5%
+    - ``single_low``: 1 year only, total return < 2%
+    - ``no_data``: No valid return rate data at all
+
+    Returns dict with keys: stability, label, latest_rate, avg_rate, reason.
+    """
+    rates = [
+        e.get("total_return_rate")
+        for e in history
+        if e.get("total_return_rate") is not None
+    ]
+
+    # No data at all (KIK-388)
+    if len(rates) == 0:
+        return {
+            "stability": "no_data",
+            "label": "-",
+            "latest_rate": None,
+            "avg_rate": None,
+            "reason": None,
+        }
+
+    if len(rates) < 2:
+        rate = rates[0]
+        if rate >= 0.05:
+            return {
+                "stability": "single_high",
+                "label": "💰 高還元",
+                "latest_rate": rate,
+                "avg_rate": rate,
+                "reason": f"1年データ（{rate * 100:.1f}%）",
+            }
+        elif rate >= 0.02:
+            return {
+                "stability": "single_moderate",
+                "label": "💰 還元あり",
+                "latest_rate": rate,
+                "avg_rate": rate,
+                "reason": f"1年データ（{rate * 100:.1f}%）",
+            }
+        else:
+            return {
+                "stability": "single_low",
+                "label": "➖ 低還元",
+                "latest_rate": rate,
+                "avg_rate": rate,
+                "reason": f"1年データ（{rate * 100:.1f}%）",
+            }
+
+    latest = rates[0]
+    prev = rates[1]
+    avg_rate = sum(rates) / len(rates)
+
+    # Temporary: latest surged >= 2x previous AND is genuinely high (>= 8%)
+    if prev > 0 and latest / prev >= 2.0 and latest >= 0.08:
+        return {
+            "stability": "temporary",
+            "label": "⚠️ 一時的高還元",
+            "latest_rate": latest,
+            "avg_rate": avg_rate,
+            "reason": f"前年比{latest / prev:.1f}倍に急増",
+        }
+
+    # Increasing: all years non-decreasing (latest first order)
+    if all(rates[i] >= rates[i + 1] for i in range(len(rates) - 1)):
+        return {
+            "stability": "increasing",
+            "label": "📈 増加傾向",
+            "latest_rate": latest,
+            "avg_rate": avg_rate,
+            "reason": f"{len(rates)}年連続増加",
+        }
+
+    # Decreasing: all years non-increasing
+    if all(rates[i] <= rates[i + 1] for i in range(len(rates) - 1)):
+        return {
+            "stability": "decreasing",
+            "label": "📉 減少傾向",
+            "latest_rate": latest,
+            "avg_rate": avg_rate,
+            "reason": f"{len(rates)}年連続減少",
+        }
+
+    # Stable: all >= 5%
+    if all(r >= 0.05 for r in rates):
+        return {
+            "stability": "stable",
+            "label": "✅ 安定高還元",
+            "latest_rate": latest,
+            "avg_rate": avg_rate,
+            "reason": f"{len(rates)}年平均{avg_rate * 100:.1f}%で安定",
+        }
+
+    return {
+        "stability": "mixed",
+        "label": "➡️ 変動あり",
+        "latest_rate": latest,
+        "avg_rate": avg_rate,
+        "reason": f"{len(rates)}年平均: {avg_rate * 100:.1f}%",
+    }
 
 
 def calculate_shareholder_return(stock: dict) -> dict:

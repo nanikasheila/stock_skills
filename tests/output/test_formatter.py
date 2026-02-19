@@ -14,6 +14,9 @@ from src.output.formatter import (
     format_markdown,
     format_pullback_markdown,
     format_query_markdown,
+    format_shareholder_return_markdown,
+    format_growth_markdown,
+    format_alpha_markdown,
 )
 
 
@@ -223,3 +226,189 @@ class TestFormatPullbackMarkdown:
         """Empty results list produces pullback-specific 'not found' message."""
         output = format_pullback_markdown([])
         assert "押し目条件に合致する銘柄が見つかりませんでした" in output
+
+
+# ---------------------------------------------------------------------------
+# format_shareholder_return_markdown — KIK-389 reason display
+# ---------------------------------------------------------------------------
+
+class TestFormatShareholderReturnMarkdown:
+    """Tests for format_shareholder_return_markdown (KIK-389 reason)."""
+
+    def test_stability_reason_displayed(self):
+        """Reason text appears in parentheses after label."""
+        results = [{
+            "symbol": "7267.T",
+            "name": "Honda",
+            "sector": "自動車",
+            "per": 10.0,
+            "roe": 0.08,
+            "dividend_yield_trailing": 0.03,
+            "buyback_yield": 0.05,
+            "total_shareholder_return": 0.17,
+            "return_stability_label": "⚠️ 一時的高還元",
+            "return_stability_reason": "前年比2.1倍に急増",
+        }]
+        output = format_shareholder_return_markdown(results)
+        assert "⚠️ 一時的高還元（前年比2.1倍に急増）" in output
+
+    def test_stability_reason_none(self):
+        """When reason is None, only the label shows (no parentheses)."""
+        results = [{
+            "symbol": "9999.T",
+            "name": "TestCo",
+            "sector": "-",
+            "per": 12.0,
+            "roe": 0.05,
+            "dividend_yield_trailing": 0.02,
+            "buyback_yield": None,
+            "total_shareholder_return": 0.02,
+            "return_stability_label": "❓ データ不足",
+            "return_stability_reason": None,
+        }]
+        output = format_shareholder_return_markdown(results)
+        assert "❓ データ不足" in output
+        assert "（" not in output
+
+
+# ---------------------------------------------------------------------------
+# format_growth_markdown — KIK-417
+# ---------------------------------------------------------------------------
+
+class TestFormatGrowthMarkdown:
+    """Tests for format_growth_markdown()."""
+
+    def test_includes_growth_columns(self):
+        """Growth markdown includes EPS growth and revenue growth columns."""
+        results = [{
+            "symbol": "7203.T",
+            "name": "Toyota Motor",
+            "sector": "Consumer Cyclical",
+            "price": 2850.0,
+            "per": 10.5,
+            "pbr": 1.2,
+            "eps_growth": 0.30,
+            "revenue_growth": 0.15,
+            "roe": 0.18,
+        }]
+        output = format_growth_markdown(results)
+
+        assert "| EPS成長 |" in output
+        assert "| 売上成長 |" in output
+        assert "| ROE |" in output
+        assert "| セクター |" in output
+        assert "7203.T" in output
+        assert "Toyota Motor" in output
+        assert "30.00%" in output  # eps_growth
+        assert "15.00%" in output  # revenue_growth
+        assert "18.00%" in output  # roe
+
+    def test_does_not_include_value_score_column(self):
+        """Growth markdown should NOT include value score or dividend columns."""
+        results = [{
+            "symbol": "TEST",
+            "eps_growth": 0.50,
+        }]
+        output = format_growth_markdown(results)
+
+        assert "スコア" not in output
+        assert "配当利回り" not in output
+
+    def test_empty_list_returns_not_found_message(self):
+        """Empty results list produces growth-specific not found message."""
+        output = format_growth_markdown([])
+        assert "成長条件に合致する銘柄が見つかりませんでした" in output
+
+    def test_missing_fields_show_dash(self):
+        """Missing fields are displayed as '-'."""
+        results = [{
+            "symbol": "TEST",
+            "sector": None,
+            "eps_growth": None,
+            "revenue_growth": None,
+            "roe": None,
+        }]
+        output = format_growth_markdown(results)
+        assert "TEST" in output
+
+
+# ---------------------------------------------------------------------------
+# Annotation markers in formatters — KIK-418/419
+# ---------------------------------------------------------------------------
+
+class TestAnnotationMarkers:
+    """Tests for note markers in formatter output (KIK-418/419)."""
+
+    def test_markers_appear_in_label(self):
+        """Note markers appear in the stock label column."""
+        results = [{
+            "symbol": "7203.T",
+            "name": "Toyota",
+            "price": 2850.0,
+            "per": 10.5,
+            "pbr": 1.2,
+            "dividend_yield": 0.025,
+            "roe": 0.12,
+            "value_score": 72.5,
+            "_note_markers": "\u26a0\ufe0f",
+            "_note_summary": "[concern] 利益減少傾向",
+        }]
+        output = format_markdown(results)
+        assert "\u26a0\ufe0f" in output
+        assert "マーカー凡例" in output
+
+    def test_no_markers_no_legend(self):
+        """When no markers present, legend is not shown."""
+        results = [{
+            "symbol": "7203.T",
+            "name": "Toyota",
+            "price": 2850.0,
+            "_note_markers": "",
+        }]
+        output = format_markdown(results)
+        assert "マーカー凡例" not in output
+
+    def test_note_detail_section(self):
+        """Note summary details appear when present."""
+        results = [{
+            "symbol": "7203.T",
+            "name": "Toyota",
+            "price": 2850.0,
+            "per": 10.5,
+            "sector": "Auto",
+            "_note_markers": "\U0001f4dd",
+            "_note_summary": "[lesson] 損切りが遅かった",
+        }]
+        output = format_query_markdown(results)
+        assert "メモ詳細" in output
+        assert "7203.T" in output
+        assert "損切りが遅かった" in output
+
+    def test_markers_in_alpha_markdown(self):
+        """Markers show in alpha format too."""
+        results = [{
+            "symbol": "TEST",
+            "_note_markers": "\u26a0\ufe0f\U0001f4dd",
+        }]
+        output = format_alpha_markdown(results)
+        assert "\u26a0\ufe0f" in output
+        assert "\U0001f4dd" in output
+
+    def test_markers_in_shareholder_return(self):
+        """Markers show in shareholder-return format."""
+        results = [{
+            "symbol": "7267.T",
+            "name": "Honda",
+            "sector": "Auto",
+            "per": 10.0,
+            "roe": 0.08,
+            "dividend_yield_trailing": 0.03,
+            "buyback_yield": 0.05,
+            "total_shareholder_return": 0.17,
+            "return_stability_label": "✅ 安定",
+            "return_stability_reason": None,
+            "_note_markers": "\u26a0\ufe0f",
+            "_note_summary": "[concern] Test concern",
+        }]
+        output = format_shareholder_return_markdown(results)
+        assert "\u26a0\ufe0f" in output

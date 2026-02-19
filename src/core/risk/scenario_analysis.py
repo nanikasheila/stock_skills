@@ -4,7 +4,7 @@ import math
 from typing import Optional
 
 from src.core.common import safe_float as _safe_float
-from src.core.scenario_definitions import (
+from src.core.risk.scenario_definitions import (
     SCENARIOS,
     SCENARIO_ALIASES,
     TARGET_TO_SECTORS,

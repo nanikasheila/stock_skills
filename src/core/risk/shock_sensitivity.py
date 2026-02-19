@@ -12,7 +12,7 @@ import pandas as pd
 from typing import Optional
 
 from src.core.common import safe_float as _safe_float
-from src.core.technicals import compute_rsi
+from src.core.screening.technicals import compute_rsi
 
 
 # ---------------------------------------------------------------------------

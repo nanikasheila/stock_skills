@@ -15,7 +15,9 @@ from src.output.research_formatter import (
     format_stock_research,
     format_industry_research,
     format_market_research,
+    format_business_research,
     _sentiment_label,
+    _vix_label,
 )
 
 
@@ -269,10 +271,11 @@ class TestFormatMarketResearch:
         assert "Rotation from defensive to cyclical" in output
 
     def test_api_unavailable(self):
-        """API unavailable shows setup message."""
+        """API unavailable shows Grok skip message."""
         data = {
             "market": "S&P500",
             "type": "market",
+            "macro_indicators": [],
             "grok_research": {
                 "price_action": "",
                 "macro_factors": [],
@@ -286,12 +289,79 @@ class TestFormatMarketResearch:
 
         output = format_market_research(data)
         assert "S&P500 - マーケット概況" in output
-        assert "XAI_API_KEY" in output
+        assert "定性分析はスキップ" in output
 
     def test_empty_data(self):
         """Empty/None data returns a message."""
         assert "リサーチデータがありません" in format_market_research(None)
         assert "リサーチデータがありません" in format_market_research({})
+
+    def test_macro_table_displayed(self):
+        """Macro indicators are shown as a table."""
+        data = {
+            "market": "日経平均",
+            "type": "market",
+            "macro_indicators": [
+                {"name": "S&P500", "symbol": "^GSPC", "price": 5100.50,
+                 "daily_change": 0.005, "weekly_change": 0.02, "is_point_diff": False},
+                {"name": "VIX", "symbol": "^VIX", "price": 18.30,
+                 "daily_change": -0.5, "weekly_change": -1.2, "is_point_diff": True},
+            ],
+            "grok_research": {
+                "price_action": "",
+                "macro_factors": [],
+                "sentiment": {"score": 0.0, "summary": ""},
+                "upcoming_events": [],
+                "sector_rotation": [],
+                "raw_response": "",
+            },
+            "api_unavailable": True,
+        }
+
+        output = format_market_research(data)
+        assert "主要指標" in output
+        assert "S&P500" in output
+        assert "5100.50" in output
+        assert "+0.50%" in output  # daily 0.5%
+        assert "+2.00%" in output  # weekly 2%
+        assert "VIX" in output
+        assert "18.30" in output
+        assert "-0.50" in output  # point diff
+        assert "-1.20" in output  # point diff
+
+    def test_vix_fear_greed(self):
+        """VIX-based Fear & Greed label is displayed."""
+        data = {
+            "market": "S&P500",
+            "type": "market",
+            "macro_indicators": [
+                {"name": "VIX", "symbol": "^VIX", "price": 30.0,
+                 "daily_change": 2.0, "weekly_change": 5.0, "is_point_diff": True},
+            ],
+            "grok_research": {
+                "price_action": "",
+                "macro_factors": [],
+                "sentiment": {"score": 0.0, "summary": ""},
+                "upcoming_events": [],
+                "sector_rotation": [],
+                "raw_response": "",
+            },
+            "api_unavailable": True,
+        }
+
+        output = format_market_research(data)
+        assert "Fear & Greed" in output
+        assert "不安拡大" in output
+
+    def test_no_macro_indicators(self):
+        """No macro_indicators → no table section."""
+        data = _full_market_data()
+        data["macro_indicators"] = []
+
+        output = format_market_research(data)
+        assert "主要指標" not in output
+        # Grok sections still present
+        assert "直近の値動き" in output
 
 
 # ===================================================================
@@ -325,3 +395,151 @@ class TestSentimentLabel:
         """Score < -0.3 is strong bear."""
         assert _sentiment_label(-0.5) == "弱気"
         assert _sentiment_label(-1.0) == "弱気"
+
+
+# ===================================================================
+# _vix_label (KIK-396)
+# ===================================================================
+
+class TestVixLabel:
+
+    def test_low_vol(self):
+        assert _vix_label(12.0) == "低ボラティリティ（楽観相場）"
+
+    def test_normal(self):
+        assert _vix_label(20.0) == "通常レンジ"
+
+    def test_anxiety(self):
+        assert _vix_label(30.0) == "不安拡大"
+
+    def test_panic(self):
+        assert _vix_label(40.0) == "パニック水準"
+
+    def test_boundaries(self):
+        assert _vix_label(14.99) == "低ボラティリティ（楽観相場）"
+        assert _vix_label(15.0) == "通常レンジ"
+        assert _vix_label(24.99) == "通常レンジ"
+        assert _vix_label(25.0) == "不安拡大"
+        assert _vix_label(34.99) == "不安拡大"
+        assert _vix_label(35.0) == "パニック水準"
+
+
+# ===================================================================
+# format_business_research
+# ===================================================================
+
+def _full_business_data():
+    """Complete business model research data."""
+    return {
+        "symbol": "7751.T",
+        "name": "Canon Inc.",
+        "type": "business",
+        "grok_research": {
+            "overview": "Canon is a diversified imaging and optical company",
+            "segments": [
+                {"name": "Printing", "revenue_share": "55%", "description": "Inkjet and laser printers"},
+                {"name": "Imaging", "revenue_share": "20%", "description": "Cameras and lenses"},
+                {"name": "Medical", "revenue_share": "15%", "description": "CT/MRI equipment"},
+                {"name": "Industrial", "revenue_share": "10%", "description": "Semiconductor lithography"},
+            ],
+            "revenue_model": "Hardware sales + consumables recurring revenue model",
+            "competitive_advantages": ["Strong patent portfolio", "Brand recognition", "Vertical integration"],
+            "key_metrics": ["Consumables attach rate", "B2B vs B2C revenue mix"],
+            "growth_strategy": ["Medical imaging expansion", "Industrial equipment growth"],
+            "risks": ["Declining print market", "Smartphone camera competition"],
+            "raw_response": "...",
+        },
+        "api_unavailable": False,
+    }
+
+
+class TestFormatBusinessResearch:
+
+    def test_full_data(self):
+        """Full data produces a complete business model report."""
+        output = format_business_research(_full_business_data())
+
+        assert "Canon Inc. (7751.T)" in output
+        assert "ビジネスモデル分析" in output
+        assert "事業概要" in output
+        assert "Canon is a diversified" in output
+        assert "事業セグメント" in output
+        assert "Printing" in output
+        assert "55%" in output
+        assert "Imaging" in output
+        assert "収益モデル" in output
+        assert "Hardware sales" in output
+        assert "競争優位性" in output
+        assert "Strong patent portfolio" in output
+        assert "重要KPI" in output
+        assert "Consumables attach rate" in output
+        assert "成長戦略" in output
+        assert "Medical imaging expansion" in output
+        assert "ビジネスリスク" in output
+        assert "Declining print market" in output
+
+    def test_api_unavailable(self):
+        """API unavailable shows setup message."""
+        data = {
+            "symbol": "AAPL",
+            "name": "Apple Inc.",
+            "type": "business",
+            "grok_research": {
+                "overview": "",
+                "segments": [],
+                "revenue_model": "",
+                "competitive_advantages": [],
+                "key_metrics": [],
+                "growth_strategy": [],
+                "risks": [],
+                "raw_response": "",
+            },
+            "api_unavailable": True,
+        }
+
+        output = format_business_research(data)
+        assert "Apple Inc. (AAPL)" in output
+        assert "ビジネスモデル分析" in output
+        assert "XAI_API_KEY" in output
+
+    def test_empty_data(self):
+        """Empty/None data returns a message."""
+        assert "リサーチデータがありません" in format_business_research(None)
+        assert "リサーチデータがありません" in format_business_research({})
+
+    def test_empty_grok_sections(self):
+        """Empty grok data shows '情報なし' for each section."""
+        data = {
+            "symbol": "TEST",
+            "name": "",
+            "type": "business",
+            "grok_research": {
+                "overview": "",
+                "segments": [],
+                "revenue_model": "",
+                "competitive_advantages": [],
+                "key_metrics": [],
+                "growth_strategy": [],
+                "risks": [],
+                "raw_response": "...",
+            },
+            "api_unavailable": False,
+        }
+
+        output = format_business_research(data)
+        assert output.count("情報なし") == 7  # All 7 sections show 情報なし
+
+    def test_no_name(self):
+        """Symbol only (no name) still formats correctly."""
+        data = _full_business_data()
+        data["name"] = ""
+        output = format_business_research(data)
+        assert "7751.T - ビジネスモデル分析" in output
+
+    def test_non_dict_segment(self):
+        """Non-dict segment items render as fallback row."""
+        data = _full_business_data()
+        data["grok_research"]["segments"] = ["Division A", {"name": "Division B", "revenue_share": "60%", "description": "Main"}]
+        output = format_business_research(data)
+        assert "| Division A | - | - |" in output
+        assert "| Division B | 60% | Main |" in output

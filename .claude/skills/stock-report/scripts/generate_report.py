@@ -7,31 +7,49 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 from src.data.yahoo_client import get_stock_info, get_stock_detail
-from src.core.indicators import calculate_value_score
+from src.core.screening.indicators import calculate_value_score
 
 try:
-    from src.core.indicators import calculate_shareholder_return
+    from src.core.screening.indicators import calculate_shareholder_return
     HAS_SHAREHOLDER_RETURN = True
 except ImportError:
     HAS_SHAREHOLDER_RETURN = False
 
 try:
-    from src.core.indicators import calculate_shareholder_return_history
+    from src.core.screening.indicators import calculate_shareholder_return_history
     HAS_SHAREHOLDER_HISTORY = True
 except ImportError:
     HAS_SHAREHOLDER_HISTORY = False
 
 try:
-    from src.core.indicators import run_consistency_checks
+    from src.core.screening.indicators import run_consistency_checks
     HAS_CONSISTENCY_CHECKS = True
 except ImportError:
     HAS_CONSISTENCY_CHECKS = False
+
+try:
+    from src.core.screening.indicators import assess_return_stability
+    HAS_RETURN_STABILITY = True
+except ImportError:
+    HAS_RETURN_STABILITY = False
 
 try:
     from src.data.history_store import save_report as history_save_report
     HAS_HISTORY = True
 except ImportError:
     HAS_HISTORY = False
+
+try:
+    from src.core.health_check import _detect_value_trap
+    HAS_VALUE_TRAP = True
+except ImportError:
+    HAS_VALUE_TRAP = False
+
+try:
+    from src.data.graph_query import get_prior_report
+    HAS_GRAPH_QUERY = True
+except ImportError:
+    HAS_GRAPH_QUERY = False
 
 
 def main():
@@ -95,6 +113,15 @@ def main():
     print(f"- **スコア**: {score:.1f} / 100")
     print(f"- **判定**: {verdict}")
 
+    # KIK-381: Value trap warning
+    if HAS_VALUE_TRAP:
+        vt = _detect_value_trap(data)
+        if vt["is_trap"]:
+            print()
+            print("## ⚠️ バリュートラップ注意")
+            for reason in vt["reasons"]:
+                print(f"- {reason}")
+
     # KIK-375: Shareholder return section
     if HAS_SHAREHOLDER_RETURN:
         sr = calculate_shareholder_return(data)
@@ -153,6 +180,29 @@ def main():
                 print()
                 print(f"- **トレンド**: {trend}")
 
+                # KIK-383: Return stability assessment
+                if HAS_RETURN_STABILITY:
+                    stability = assess_return_stability(sr_hist)
+                    stab_label = stability.get("label", "")
+                    avg_rate = stability.get("avg_rate")
+                    if avg_rate is not None:
+                        print(f"- **安定度**: {stab_label}（3年平均: {avg_rate*100:.2f}%）")
+                    else:
+                        print(f"- **安定度**: {stab_label}")
+        elif len(sr_hist) == 1 and HAS_RETURN_STABILITY:
+            stability = assess_return_stability(sr_hist)
+            stab_label = stability.get("label", "")
+            if stab_label and stab_label != "-":
+                print()
+                print("## 株主還元安定度")
+                entry = sr_hist[0]
+                rate = entry.get("total_return_rate")
+                if rate is not None:
+                    fy = entry.get("fiscal_year")
+                    fy_str = f"{fy}年: " if fy else ""
+                    print(f"- {fy_str}総還元率 {rate*100:.2f}%")
+                print(f"- **安定度**: {stab_label}")
+
     # Consistency checks (analysis.md – 再発防止)
     if HAS_CONSISTENCY_CHECKS:
         warnings = run_consistency_checks(data)
@@ -176,6 +226,20 @@ def main():
         print(f"| FwdEPS | {fwd_eps:.2f} |")
         print(f"| EPS成長率 | {eps_growth_pct:+.1f}% |")
         print(f"| 方向性 | {direction}予想 |")
+
+    # KIK-406: Prior report comparison
+    if HAS_GRAPH_QUERY:
+        try:
+            prior = get_prior_report(symbol)
+            if prior and prior.get("score") is not None:
+                diff = score - prior["score"]
+                print()
+                print("## 前回レポートとの比較")
+                print(f"- 前回: {prior['date']} / スコア {prior['score']:.1f} / {prior.get('verdict', '-')}")
+                print(f"- 今回: スコア {score:.1f} / {verdict}")
+                print(f"- 変化: {diff:+.1f}pt")
+        except Exception:
+            pass
 
     if HAS_HISTORY:
         try:
