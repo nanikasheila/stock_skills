@@ -75,12 +75,15 @@ def _trade_type(raw: str) -> str | None:
 def parse_jp_row(row: list[str]) -> dict | None:
     """Parse a single JP-format CSV row into a normalised trade dict.
 
-    Returns None for rows that should be skipped (e.g. 入庫 without price).
+    Handles 入庫 (transfer / stock-split) records.
     """
     if len(row) < 12:
         return None
 
-    trade = _trade_type(row[7])  # 売買区分
+    # 売買区分 (row[7]) を優先、空なら 取引区分 (row[6]) で入庫を検出
+    trade = _trade_type(row[7])
+    if trade is None:
+        trade = _trade_type(row[6])
     if trade is None:
         return None
 
@@ -92,10 +95,24 @@ def parse_jp_row(row: list[str]) -> dict | None:
     name = row[3].strip().strip('"')      # 銘柄名
     account = row[5].strip().strip('"')   # 口座区分
 
-    # 入庫 with no meaningful price → record as transfer at stated price
-    # (the price column sometimes holds an average cost for 入庫)
+    # 受渡金額[円] (column 16)
+    settlement_jpy = _parse_number(row[16]) if len(row) > 16 else 0.0
+
+    # 入庫 with price=0 → stock split record (keep it)
     if trade == "transfer" and price <= 0:
-        return None
+        return {
+            "symbol": symbol,
+            "date": date_str,
+            "trade_type": trade,
+            "shares": shares,
+            "price": 0.0,
+            "currency": "JPY",
+            "name": name,
+            "account": account,
+            "fx_rate": 1.0,
+            "settlement_jpy": 0.0,
+            "settlement_usd": 0.0,
+        }
 
     return {
         "symbol": symbol,
@@ -106,15 +123,25 @@ def parse_jp_row(row: list[str]) -> dict | None:
         "currency": "JPY",
         "name": name,
         "account": account,
+        "fx_rate": 1.0,
+        "settlement_jpy": settlement_jpy,
+        "settlement_usd": 0.0,
     }
 
 
 def parse_us_row(row: list[str]) -> dict | None:
-    """Parse a single US-format CSV row into a normalised trade dict."""
+    """Parse a single US-format CSV row into a normalised trade dict.
+
+    Handles 入庫 (transfer / stock-split) records and extracts
+    FX rate / settlement amounts for accurate JPY P&L.
+    """
     if len(row) < 12:
         return None
 
-    trade = _trade_type(row[6])  # 売買区分
+    # 売買区分 (row[6]) を優先、空なら 取引区分 (row[5]) で入庫を検出
+    trade = _trade_type(row[6])
+    if trade is None:
+        trade = _trade_type(row[5])
     if trade is None:
         return None
 
@@ -125,9 +152,26 @@ def parse_us_row(row: list[str]) -> dict | None:
     name = row[3].strip().strip('"')     # 銘柄名
     account = row[4].strip().strip('"')  # 口座
 
-    # 入庫 with no price info → skip unless price is present
+    # FX rate and settlement amounts from CSV
+    fx_rate = _parse_number(row[13]) if len(row) > 13 else 0.0
+    settlement_usd = _parse_number(row[16]) if len(row) > 16 else 0.0
+    settlement_jpy = _parse_number(row[17]) if len(row) > 17 else 0.0
+
+    # 入庫 with price=0 → stock split record (keep it)
     if trade == "transfer" and price <= 0:
-        return None
+        return {
+            "symbol": ticker,
+            "date": date_str,
+            "trade_type": trade,
+            "shares": shares,
+            "price": 0.0,
+            "currency": "USD",
+            "name": name,
+            "account": account,
+            "fx_rate": 0.0,
+            "settlement_jpy": 0.0,
+            "settlement_usd": 0.0,
+        }
 
     return {
         "symbol": ticker,
@@ -138,6 +182,9 @@ def parse_us_row(row: list[str]) -> dict | None:
         "currency": "USD",
         "name": name,
         "account": account,
+        "fx_rate": fx_rate,
+        "settlement_jpy": settlement_jpy,
+        "settlement_usd": settlement_usd,
     }
 
 
@@ -153,7 +200,8 @@ def _agg_key(t: dict) -> tuple:
 def aggregate_trades(trades: list[dict]) -> list[dict]:
     """Aggregate same-day / same-symbol / same-direction trades.
 
-    Computes total shares and volume-weighted average price.
+    Computes total shares, volume-weighted average price,
+    and aggregated FX rate / settlement amounts.
     """
     from collections import OrderedDict
 
@@ -168,9 +216,30 @@ def aggregate_trades(trades: list[dict]) -> list[dict]:
         total_cost = sum(g["shares"] * g["price"] for g in group)
         avg_price = total_cost / total_shares if total_shares else 0.0
 
+        # Aggregate settlement amounts (sum)
+        total_settlement_jpy = sum(g.get("settlement_jpy", 0) for g in group)
+        total_settlement_usd = sum(g.get("settlement_usd", 0) for g in group)
+
+        # Weighted-average FX rate (by USD cost amount)
+        if total_cost > 0:
+            fx_weighted = sum(
+                g["shares"] * g["price"] * g.get("fx_rate", 0)
+                for g in group
+            )
+            avg_fx_rate = fx_weighted / total_cost
+        else:
+            # Transfer or zero-price: take any non-zero fx_rate
+            avg_fx_rate = next(
+                (g.get("fx_rate", 0) for g in group if g.get("fx_rate", 0)),
+                0.0,
+            )
+
         base = group[0].copy()
         base["shares"] = total_shares
         base["price"] = round(avg_price, 4)
+        base["fx_rate"] = round(avg_fx_rate, 4)
+        base["settlement_jpy"] = round(total_settlement_jpy, 2)
+        base["settlement_usd"] = round(total_settlement_usd, 2)
         base["_aggregated_count"] = len(group)
         result.append(base)
 
@@ -214,6 +283,9 @@ def save_trade_record(
         "shares": trade["shares"],
         "price": trade["price"],
         "currency": trade["currency"],
+        "fx_rate": trade.get("fx_rate", 0.0),
+        "settlement_jpy": trade.get("settlement_jpy", 0.0),
+        "settlement_usd": trade.get("settlement_usd", 0.0),
         "memo": f"CSV import: {trade.get('name', '')} ({trade.get('account', '')})",
         "_saved_at": now,
     }

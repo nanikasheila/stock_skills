@@ -141,11 +141,14 @@ st.markdown("### 📈 サマリー")
 positions = snapshot["positions"]
 total_value = snapshot["total_value_jpy"]
 total_cost = sum(p.get("cost_jpy", 0) for p in positions if "cost_jpy" in p)
-total_pnl = total_value - total_cost if total_cost else 0
-total_pnl_pct = ((total_value / total_cost) - 1) * 100 if total_cost else 0
+unrealized_pnl = total_value - total_cost if total_cost else 0
+unrealized_pnl_pct = ((total_value / total_cost) - 1) * 100 if total_cost else 0
+realized_pnl = snapshot.get("realized_pnl", {}).get("total_jpy", 0)
+total_pnl = unrealized_pnl + realized_pnl
 num_holdings = len([p for p in positions if p.get("sector") != "Cash"])
 
-col1, col2, col3, col4 = st.columns(4)
+# --- メイン KPI (大きく表示) ---
+col1, col2, col3 = st.columns(3)
 
 with col1:
     st.metric(
@@ -154,19 +157,41 @@ with col1:
     )
 with col2:
     st.metric(
-        label="トータル損益",
-        value=f"¥{total_pnl:,.0f}",
-        delta=f"{total_pnl_pct:+.2f}%",
+        label="評価損益（含み）",
+        value=f"¥{unrealized_pnl:,.0f}",
+        delta=f"{unrealized_pnl_pct:+.2f}%",
     )
 with col3:
     st.metric(
         label="保有銘柄数",
         value=f"{num_holdings}",
+        delta=f"更新: {snapshot['as_of'][:10]}",
     )
-with col4:
-    st.metric(
-        label="最終更新",
-        value=snapshot["as_of"][:10],
+
+# --- サブ KPI (小さく表示) ---
+realized_sign = "+" if realized_pnl >= 0 else ""
+total_pnl_sign = "+" if total_pnl >= 0 else ""
+realized_color = "#4ade80" if realized_pnl >= 0 else "#f87171"
+total_pnl_color = "#4ade80" if total_pnl >= 0 else "#f87171"
+
+sub_col1, sub_col2 = st.columns(2)
+with sub_col1:
+    st.markdown(
+        f'<div style="padding: 4px 0;">'
+        f'<span style="font-size: 0.85rem; opacity: 0.7;">トータル損益（実現＋含み）</span><br>'
+        f'<span style="font-size: 1.2rem; font-weight: 600; color: {total_pnl_color};">'
+        f'{total_pnl_sign}¥{total_pnl:,.0f}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+with sub_col2:
+    st.markdown(
+        f'<div style="padding: 4px 0;">'
+        f'<span style="font-size: 0.85rem; opacity: 0.7;">実現損益（確定済）</span><br>'
+        f'<span style="font-size: 1.2rem; font-weight: 600; color: {realized_color};">'
+        f'{realized_sign}¥{realized_pnl:,.0f}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
     )
 
 st.markdown("---")

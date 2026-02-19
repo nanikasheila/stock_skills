@@ -167,10 +167,31 @@ class TestParseJpRow:
         assert result is not None
         assert result["trade_type"] == "transfer"
 
-    def test_transfer_no_price_skipped(self):
+    def test_transfer_no_price_is_split(self):
+        """JP入庫 with price=0 is kept as stock split record."""
         row = _jp_row(buy_sell="入庫", price="0")
         result = parse_jp_row(row)
-        assert result is None
+        assert result is not None
+        assert result["trade_type"] == "transfer"
+        assert result["price"] == 0.0
+        assert result["fx_rate"] == 1.0
+        assert result["settlement_jpy"] == 0.0
+
+    def test_has_fx_and_settlement(self):
+        """JP row includes fx_rate=1.0 and settlement_jpy."""
+        row = _jp_row()
+        result = parse_jp_row(row)
+        assert result["fx_rate"] == 1.0
+        assert result["settlement_jpy"] == 669405.0  # from _jp_row fixture
+        assert result["settlement_usd"] == 0.0
+
+    def test_transfer_from_torihiki_kubun(self):
+        """取引区分(row[6]) に入庫がある場合も検出."""
+        row = _jp_row(txn_type="入庫", buy_sell="")
+        # row[6] = '入庫', row[7] = '' (empty)
+        result = parse_jp_row(row)
+        assert result is not None
+        assert result["trade_type"] == "transfer"
 
     def test_short_row_skipped(self):
         result = parse_jp_row(["a", "b", "c"])
@@ -203,10 +224,30 @@ class TestParseUsRow:
         result = parse_us_row(row)
         assert result["trade_type"] == "sell"
 
-    def test_transfer_skipped(self):
+    def test_transfer_no_price_is_split(self):
+        """US入庫 with price='-' is kept as stock split record."""
         row = _us_row(buy_sell="入庫", price="-")
         result = parse_us_row(row)
-        assert result is None
+        assert result is not None
+        assert result["trade_type"] == "transfer"
+        assert result["price"] == 0.0
+        assert result["fx_rate"] == 0.0
+        assert result["settlement_jpy"] == 0.0
+
+    def test_transfer_from_torihiki_kubun(self):
+        """取引区分(row[5])=入庫, 売買区分(row[6])=''  の場合も検出."""
+        row = _us_row(txn_type="入庫", buy_sell="", price="-")
+        result = parse_us_row(row)
+        assert result is not None
+        assert result["trade_type"] == "transfer"
+
+    def test_has_fx_and_settlement(self):
+        """US row includes fx_rate, settlement_jpy, settlement_usd."""
+        row = _us_row()
+        result = parse_us_row(row)
+        assert result["fx_rate"] == 151.19
+        assert result["settlement_usd"] == 10371.99
+        assert result["settlement_jpy"] == 0.0  # '-' in _us_row fixture
 
     def test_short_row_skipped(self):
         result = parse_us_row(["a", "b"])
@@ -284,6 +325,43 @@ class TestAggregateTrades:
         result = aggregate_trades(trades)
         assert result[0]["symbol"] == "A"
         assert result[1]["symbol"] == "B"
+
+    def test_aggregates_fx_and_settlement(self):
+        """Aggregation computes weighted FX rate and sums settlement."""
+        trades = [
+            {"date": "2024-02-24", "symbol": "IXN",
+             "trade_type": "buy", "shares": 16, "price": 306.46,
+             "currency": "USD", "name": "IXN", "account": "特定",
+             "fx_rate": 105.63, "settlement_jpy": 519185.0, "settlement_usd": 0.0},
+            {"date": "2024-02-24", "symbol": "IXN",
+             "trade_type": "buy", "shares": 10, "price": 306.46,
+             "currency": "USD", "name": "IXN", "account": "特定",
+             "fx_rate": 105.63, "settlement_jpy": 324487.0, "settlement_usd": 0.0},
+        ]
+        result = aggregate_trades(trades)
+        assert len(result) == 1
+        assert result[0]["shares"] == 26
+        assert result[0]["fx_rate"] == pytest.approx(105.63, abs=0.01)
+        assert result[0]["settlement_jpy"] == pytest.approx(519185 + 324487)
+        assert result[0]["settlement_usd"] == 0.0
+
+    def test_aggregates_mixed_settlement(self):
+        """Aggregation handles mixed JPY/USD settlement."""
+        trades = [
+            {"date": "2022-01-20", "symbol": "VTI",
+             "trade_type": "buy", "shares": 6, "price": 229.0,
+             "currency": "USD", "name": "VTI", "account": "旧NISA",
+             "fx_rate": 114.56, "settlement_jpy": 157405.0, "settlement_usd": 0.0},
+            {"date": "2022-01-20", "symbol": "VTI",
+             "trade_type": "buy", "shares": 4, "price": 229.0,
+             "currency": "USD", "name": "VTI", "account": "旧NISA",
+             "fx_rate": 114.56, "settlement_jpy": 0.0, "settlement_usd": 916.0},
+        ]
+        result = aggregate_trades(trades)
+        assert len(result) == 1
+        assert result[0]["shares"] == 10
+        assert result[0]["settlement_jpy"] == 157405.0
+        assert result[0]["settlement_usd"] == 916.0
 
 
 # ---------------------------------------------------------------------------

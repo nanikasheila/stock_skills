@@ -21,6 +21,7 @@ if str(DASHBOARD_SCRIPTS) not in sys.path:
 from components.data_loader import (
     _reconstruct_daily_holdings,
     _compute_invested_capital,
+    _compute_realized_pnl,
     _build_trade_activity,
     _load_cached_prices,
     _save_prices_cache,
@@ -471,3 +472,246 @@ class TestPriceCache:
         assert not result.empty
         mock_batch.assert_called_once()
         mock_fetch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _compute_realized_pnl
+# ---------------------------------------------------------------------------
+
+class TestComputeRealizedPnl:
+    """実現損益 FIFO 計算のテスト."""
+
+    FX = {"JPY": 1.0, "USD": 150.0}
+
+    def test_simple_buy_sell_profit(self):
+        """単純な買い→売りで利益."""
+        trades = [
+            {"symbol": "7203.T", "trade_type": "buy", "shares": 100,
+             "price": 2800.0, "currency": "JPY", "date": "2026-01-01"},
+            {"symbol": "7203.T", "trade_type": "sell", "shares": 100,
+             "price": 3000.0, "currency": "JPY", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["total_jpy"] == pytest.approx(20_000.0)
+        assert result["by_symbol"]["7203.T"] == pytest.approx(20_000.0)
+
+    def test_simple_buy_sell_loss(self):
+        """単純な買い→売りで損失."""
+        trades = [
+            {"symbol": "AAPL", "trade_type": "buy", "shares": 10,
+             "price": 200.0, "currency": "USD", "date": "2026-01-01"},
+            {"symbol": "AAPL", "trade_type": "sell", "shares": 10,
+             "price": 180.0, "currency": "USD", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["total_jpy"] == pytest.approx(-30_000.0)
+
+    def test_fifo_order(self):
+        """FIFO: 最初のロットから先に消化."""
+        trades = [
+            {"symbol": "X", "trade_type": "buy", "shares": 50,
+             "price": 100.0, "currency": "JPY", "date": "2026-01-01"},
+            {"symbol": "X", "trade_type": "buy", "shares": 50,
+             "price": 200.0, "currency": "JPY", "date": "2026-01-15"},
+            {"symbol": "X", "trade_type": "sell", "shares": 50,
+             "price": 150.0, "currency": "JPY", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["total_jpy"] == pytest.approx(2_500.0)
+
+    def test_partial_lot_sell(self):
+        """ロットの一部だけ売却."""
+        trades = [
+            {"symbol": "X", "trade_type": "buy", "shares": 100,
+             "price": 100.0, "currency": "JPY", "date": "2026-01-01"},
+            {"symbol": "X", "trade_type": "sell", "shares": 30,
+             "price": 120.0, "currency": "JPY", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["total_jpy"] == pytest.approx(600.0)
+
+    def test_sell_across_lots(self):
+        """売却が複数ロットにまたがる."""
+        trades = [
+            {"symbol": "X", "trade_type": "buy", "shares": 30,
+             "price": 100.0, "currency": "JPY", "date": "2026-01-01"},
+            {"symbol": "X", "trade_type": "buy", "shares": 70,
+             "price": 200.0, "currency": "JPY", "date": "2026-01-10"},
+            {"symbol": "X", "trade_type": "sell", "shares": 50,
+             "price": 180.0, "currency": "JPY", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # lot1 30@100, lot2 70@200 → sell 50:
+        # 30 from lot1: (180-100)*30=2400, 20 from lot2: (180-200)*20=-400
+        assert result["total_jpy"] == pytest.approx(2_000.0)
+
+    def test_no_sells_returns_zero(self):
+        """売却がなければ実現損益ゼロ."""
+        trades = [
+            {"symbol": "X", "trade_type": "buy", "shares": 100,
+             "price": 100.0, "currency": "JPY", "date": "2026-01-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["total_jpy"] == 0.0
+        assert len(result["by_symbol"]) == 0
+
+    def test_multiple_symbols(self):
+        """複数銘柄の実現損益."""
+        trades = [
+            {"symbol": "A", "trade_type": "buy", "shares": 10,
+             "price": 100.0, "currency": "JPY", "date": "2026-01-01"},
+            {"symbol": "B", "trade_type": "buy", "shares": 5,
+             "price": 50.0, "currency": "USD", "date": "2026-01-01"},
+            {"symbol": "A", "trade_type": "sell", "shares": 10,
+             "price": 120.0, "currency": "JPY", "date": "2026-02-01"},
+            {"symbol": "B", "trade_type": "sell", "shares": 5,
+             "price": 60.0, "currency": "USD", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["by_symbol"]["A"] == pytest.approx(200.0)
+        assert result["by_symbol"]["B"] == pytest.approx(7_500.0)
+        assert result["total_jpy"] == pytest.approx(7_700.0)
+
+    def test_cash_excluded(self):
+        """CASH銘柄は実現損益計算から除外."""
+        trades = [
+            {"symbol": "USD.CASH", "trade_type": "buy", "shares": 1,
+             "price": 100.0, "currency": "USD", "date": "2026-01-01"},
+            {"symbol": "USD.CASH", "trade_type": "sell", "shares": 1,
+             "price": 200.0, "currency": "USD", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["total_jpy"] == 0.0
+
+    def test_transfer_creates_lot(self):
+        """入庫 (transfer) with price > 0 も買いロットとして扱う."""
+        trades = [
+            {"symbol": "X", "trade_type": "transfer", "shares": 100,
+             "price": 50.0, "currency": "JPY", "date": "2026-01-01"},
+            {"symbol": "X", "trade_type": "sell", "shares": 100,
+             "price": 80.0, "currency": "JPY", "date": "2026-02-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        assert result["total_jpy"] == pytest.approx(3_000.0)
+
+    # --- 株式分割 (Stock Split) テスト ---
+
+    def test_stock_split_adjusts_cost_basis(self):
+        """transfer(price=0) は株式分割として既存ロットの単価を調整."""
+        # IXN のようなケース: 34株 → 204株 (6:1 split)
+        trades = [
+            {"symbol": "IXN", "trade_type": "buy", "shares": 4,
+             "price": 300.0, "currency": "USD", "date": "2021-01-01",
+             "settlement_jpy": 120000.0},
+            {"symbol": "IXN", "trade_type": "buy", "shares": 30,
+             "price": 306.0, "currency": "USD", "date": "2021-02-24",
+             "settlement_jpy": 960000.0},
+            # 6:1 split → 170 additional shares
+            {"symbol": "IXN", "trade_type": "transfer", "shares": 170,
+             "price": 0.0, "currency": "USD", "date": "2021-07-19"},
+            # Sell all 204 shares at post-split price
+            {"symbol": "IXN", "trade_type": "sell", "shares": 204,
+             "price": 75.0, "currency": "USD", "date": "2024-03-05",
+             "settlement_jpy": 2_295_000.0},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # Total cost: 120000 + 960000 = 1,080,000 JPY
+        # Proceeds: 2,295,000 JPY
+        # P&L = 2,295,000 - 1,080,000 = 1,215,000
+        assert result["by_symbol"]["IXN"] == pytest.approx(1_215_000.0)
+
+    def test_stock_split_no_existing_lots(self):
+        """transfer(price=0) だが既存ロットなし → 無視される."""
+        trades = [
+            {"symbol": "X", "trade_type": "transfer", "shares": 100,
+             "price": 0.0, "currency": "USD", "date": "2021-07-19"},
+            {"symbol": "X", "trade_type": "sell", "shares": 100,
+             "price": 50.0, "currency": "USD", "date": "2024-01-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # No lots available → unmatched sell → no P&L
+        assert result["total_jpy"] == pytest.approx(0.0)
+
+    def test_split_then_additional_buy(self):
+        """分割後に新たに購入 → 新ロットは分割影響なし."""
+        trades = [
+            {"symbol": "X", "trade_type": "buy", "shares": 10,
+             "price": 300.0, "currency": "USD", "date": "2021-01-01",
+             "fx_rate": 100.0},  # cost = 10 * 300 * 100 = 300,000
+            # 3:1 split → 20 additional shares
+            {"symbol": "X", "trade_type": "transfer", "shares": 20,
+             "price": 0.0, "currency": "USD", "date": "2021-07-01"},
+            # Post-split buy at adjusted price
+            {"symbol": "X", "trade_type": "buy", "shares": 10,
+             "price": 100.0, "currency": "USD", "date": "2022-01-01",
+             "fx_rate": 120.0},  # cost = 10 * 100 * 120 = 120,000
+            # Sell all 40 shares
+            {"symbol": "X", "trade_type": "sell", "shares": 40,
+             "price": 120.0, "currency": "USD", "date": "2024-01-01",
+             "fx_rate": 150.0},  # proceeds = 40 * 120 * 150 = 720,000
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # Lot1 after split: 30 shares @ 10,000 JPY/share (300,000/30)
+        # Lot2: 10 shares @ 12,000 JPY/share (120,000/10)
+        # Sell 40: proceeds = 720,000
+        # FIFO: 30 from lot1 (cost 300,000) + 10 from lot2 (cost 120,000)
+        # P&L = 720,000 - 420,000 = 300,000
+        assert result["by_symbol"]["X"] == pytest.approx(300_000.0)
+
+    # --- 為替レート (FX Rate) テスト ---
+
+    def test_fx_rate_per_trade(self):
+        """各取引のfx_rateで換算される（グローバルFXではなく）."""
+        trades = [
+            {"symbol": "VTI", "trade_type": "buy", "shares": 10,
+             "price": 200.0, "currency": "USD", "date": "2021-01-01",
+             "fx_rate": 105.0},  # cost = 10 * 200 * 105 = 210,000
+            {"symbol": "VTI", "trade_type": "sell", "shares": 10,
+             "price": 250.0, "currency": "USD", "date": "2024-01-01",
+             "fx_rate": 150.0},  # proceeds = 10 * 250 * 150 = 375,000
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # P&L = 375,000 - 210,000 = 165,000 (includes FX gain)
+        assert result["by_symbol"]["VTI"] == pytest.approx(165_000.0)
+
+    def test_settlement_jpy_used_directly(self):
+        """settlement_jpyがある場合、直接使用される."""
+        trades = [
+            {"symbol": "VTI", "trade_type": "buy", "shares": 100,
+             "price": 200.0, "currency": "USD", "date": "2021-01-01",
+             "settlement_jpy": 2_100_000.0},  # includes fees
+            {"symbol": "VTI", "trade_type": "sell", "shares": 100,
+             "price": 250.0, "currency": "USD", "date": "2024-01-01",
+             "settlement_jpy": 3_700_000.0},  # includes fees
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # P&L = 3,700,000 - 2,100,000 = 1,600,000
+        assert result["by_symbol"]["VTI"] == pytest.approx(1_600_000.0)
+
+    def test_settlement_usd_with_fx(self):
+        """settlement_usd * fx_rateでJPY換算."""
+        trades = [
+            {"symbol": "AAPL", "trade_type": "buy", "shares": 10,
+             "price": 200.0, "currency": "USD", "date": "2021-01-01",
+             "settlement_usd": 2010.0, "fx_rate": 105.0},
+            {"symbol": "AAPL", "trade_type": "sell", "shares": 10,
+             "price": 250.0, "currency": "USD", "date": "2024-01-01",
+             "settlement_usd": 2490.0, "fx_rate": 150.0},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # Buy cost: 2010 * 105 = 211,050
+        # Sell proceeds: 2490 * 150 = 373,500
+        # P&L = 373,500 - 211,050 = 162,450
+        assert result["by_symbol"]["AAPL"] == pytest.approx(162_450.0)
+
+    def test_backward_compat_no_fx_fields(self):
+        """旧形式JSON（fx_rate/settlement未保存）でも動作する."""
+        trades = [
+            {"symbol": "X", "trade_type": "buy", "shares": 10,
+             "price": 100.0, "currency": "USD", "date": "2021-01-01"},
+            {"symbol": "X", "trade_type": "sell", "shares": 10,
+             "price": 120.0, "currency": "USD", "date": "2024-01-01"},
+        ]
+        result = _compute_realized_pnl(trades, self.FX)
+        # Fallback to global FX (150): P&L = 10*(120-100)*150 = 30,000
+        assert result["by_symbol"]["X"] == pytest.approx(30_000.0)

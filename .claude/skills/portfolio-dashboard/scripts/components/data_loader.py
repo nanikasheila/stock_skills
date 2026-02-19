@@ -82,6 +82,9 @@ def get_current_snapshot(
                 "current_price": cost_price,
                 "currency": currency,
                 "evaluation_jpy": eval_jpy,
+                "cost_jpy": eval_jpy,  # Cash: 損益ゼロ
+                "pnl_jpy": 0,
+                "pnl_pct": 0,
                 "sector": "Cash",
             })
             total_value_jpy += eval_jpy
@@ -113,10 +116,15 @@ def get_current_snapshot(
         })
         total_value_jpy += eval_jpy
 
+    # 実現損益の計算
+    trades = _build_holdings_timeline()
+    realized = _compute_realized_pnl(trades, fx_rates)
+
     return {
         "positions": result_positions,
         "total_value_jpy": total_value_jpy,
         "fx_rates": fx_rates,
+        "realized_pnl": realized,
         "as_of": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -207,6 +215,123 @@ def _compute_invested_capital(
         invested[date_str] = cumulative
 
     return invested
+
+
+def _trade_cost_jpy(
+    trade: dict,
+    global_fx_rates: dict[str, float],
+) -> float:
+    """取引の約定金額をJPYで計算する.
+
+    優先順位:
+    1. settlement_jpy + settlement_usd * fx_rate (両方ある場合)
+    2. settlement_jpy が正 → そのまま使用
+    3. settlement_usd * fx_rate (取引日レート)
+    4. shares * price * fx_rate (取引日レートで計算)
+    5. shares * price * 現在のFXレート (フォールバック)
+    """
+    sjpy = trade.get("settlement_jpy", 0) or 0
+    susd = trade.get("settlement_usd", 0) or 0
+    fx = trade.get("fx_rate", 0) or 0
+
+    if sjpy > 0 and susd > 0:
+        # Mixed settlement (JPY + USD portions)
+        return sjpy + susd * fx
+    elif sjpy > 0:
+        return sjpy
+    elif susd > 0 and fx > 0:
+        return susd * fx
+    elif fx > 0:
+        # FX rate available but no explicit settlement → use price * fx_rate
+        shares = trade.get("shares", 0)
+        price = trade.get("price", 0)
+        return shares * price * fx
+    else:
+        # Final fallback: use current FX rate
+        shares = trade.get("shares", 0)
+        price = trade.get("price", 0)
+        cur = trade.get("currency", "JPY")
+        rate = global_fx_rates.get(cur, 1.0)
+        return shares * price * rate
+
+
+def _compute_realized_pnl(
+    trades: list[dict],
+    fx_rates: dict[str, float],
+) -> dict:
+    """FIFO方式で実現損益を計算する（為替換算・株式分割対応版）.
+
+    改善点:
+    - 為替換算: CSVの受渡金額/為替レートを使い、取引時点のJPY換算で損益を算出
+    - 株式分割: transfer(入庫)でprice=0の場合、既存ロットの単価を分割比率で調整
+    - フォールバック: 旧形式のJSON（fx_rate/settlement未保存）は現在レートで近似
+
+    Returns
+    -------
+    dict
+        by_symbol: dict[str, float]  銘柄別実現損益(JPY)
+        total_jpy: float  合計実現損益(JPY)
+    """
+    # FIFO: 銘柄ごとに購入ロットを管理
+    # 各ロット: {"shares": float, "cost_jpy_per_share": float}
+    lots: dict[str, list[dict]] = defaultdict(list)
+    realized_by_symbol: dict[str, float] = defaultdict(float)
+
+    for trade in trades:
+        sym = trade.get("symbol", "")
+        tt = trade.get("trade_type", "buy")
+        shares = trade.get("shares", 0)
+        price = trade.get("price", 0)
+
+        if is_cash(sym):
+            continue
+
+        if tt == "buy":
+            total_jpy = _trade_cost_jpy(trade, fx_rates)
+            cost_per_share = total_jpy / shares if shares > 0 else 0
+            lots[sym].append({
+                "shares": float(shares),
+                "cost_jpy_per_share": cost_per_share,
+            })
+
+        elif tt == "transfer":
+            if price <= 0 and lots[sym]:
+                # Stock split: redistribute cost basis
+                existing_shares = sum(lot["shares"] for lot in lots[sym])
+                if existing_shares > 0:
+                    split_ratio = (existing_shares + shares) / existing_shares
+                    for lot in lots[sym]:
+                        lot["cost_jpy_per_share"] /= split_ratio
+                        lot["shares"] *= split_ratio
+            elif price > 0:
+                # Regular transfer with cost basis
+                total_jpy = _trade_cost_jpy(trade, fx_rates)
+                cost_per_share = total_jpy / shares if shares > 0 else 0
+                lots[sym].append({
+                    "shares": float(shares),
+                    "cost_jpy_per_share": cost_per_share,
+                })
+
+        elif tt == "sell":
+            total_jpy = _trade_cost_jpy(trade, fx_rates)
+            proceeds_per_share = total_jpy / shares if shares > 0 else 0
+
+            remaining = float(shares)
+            while remaining > 0.5 and lots[sym]:
+                lot = lots[sym][0]
+                take = min(remaining, lot["shares"])
+                pnl = take * (proceeds_per_share - lot["cost_jpy_per_share"])
+                realized_by_symbol[sym] += pnl
+                lot["shares"] -= take
+                remaining -= take
+                if lot["shares"] < 0.5:
+                    lots[sym].pop(0)
+
+    total = sum(realized_by_symbol.values())
+    return {
+        "by_symbol": dict(realized_by_symbol),
+        "total_jpy": total,
+    }
 
 
 def _build_trade_activity(
