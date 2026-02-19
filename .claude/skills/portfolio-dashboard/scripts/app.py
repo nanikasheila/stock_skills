@@ -11,12 +11,14 @@ Usage
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+from streamlit_autorefresh import st_autorefresh
 
 # --- コンポーネントを import ---
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -104,14 +106,40 @@ show_individual = st.sidebar.checkbox(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**Data Source**: yfinance + portfolio.csv\n\n"
-    "**Last Update**: Auto on page load"
+
+# --- データ更新セクション ---
+st.sidebar.markdown("### 🔄 データ更新")
+
+# 自動更新の間隔設定
+_REFRESH_OPTIONS = [
+    ("なし（手動のみ）", 0),
+    ("1分", 60),
+    ("5分", 300),
+    ("15分", 900),
+    ("30分", 1800),
+    ("1時間", 3600),
+]
+auto_refresh_label = st.sidebar.selectbox(
+    "⏱ 自動更新間隔",
+    options=[label for label, _ in _REFRESH_OPTIONS],
+    index=2,  # デフォルト: 5分
+    help="選択した間隔でダッシュボードを自動リロードします",
 )
+auto_refresh_sec = dict(_REFRESH_OPTIONS)[auto_refresh_label]
+
+# 自動更新タイマーを設置（interval > 0 の場合のみ）
+if auto_refresh_sec > 0:
+    _refresh_count = st_autorefresh(
+        interval=auto_refresh_sec * 1000,
+        limit=0,  # 無制限
+        key="auto_refresh",
+    )
+else:
+    _refresh_count = 0
 
 
 # =====================================================================
-# データ取得（キャッシュ付き）
+# データ取得（キャッシュ付き）— ボタン/タイマーより先に定義
 # =====================================================================
 @st.cache_data(ttl=300, show_spinner="データを取得中...")
 def load_snapshot():
@@ -121,6 +149,43 @@ def load_snapshot():
 @st.cache_data(ttl=300, show_spinner="株価履歴を取得中...")
 def load_history(period_val: str):
     return build_portfolio_history(period=period_val)
+
+
+@st.cache_data(ttl=300, show_spinner="取引データを集計中...")
+def load_trade_activity():
+    return get_trade_activity()
+
+
+# 手動更新ボタン
+if st.sidebar.button("🔄 今すぐ更新", use_container_width=True):
+    # Streamlit キャッシュをクリア
+    load_snapshot.clear()
+    load_history.clear()
+    load_trade_activity.clear()
+    # ディスクキャッシュもクリア
+    _cache_dir = Path(_SCRIPT_DIR).resolve().parents[4] / "data" / "cache" / "price_history"
+    if _cache_dir.exists():
+        for f in _cache_dir.glob("*.csv"):
+            f.unlink(missing_ok=True)
+    st.rerun()
+
+# 最終更新時刻を session_state で管理
+if "last_refresh" not in st.session_state:
+    st.session_state["last_refresh"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state["_prev_refresh_count"] = 0
+
+# 自動更新タイマーが発火した場合もキャッシュをクリア
+if _refresh_count > st.session_state.get("_prev_refresh_count", 0):
+    load_snapshot.clear()
+    load_history.clear()
+    load_trade_activity.clear()
+    st.session_state["last_refresh"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state["_prev_refresh_count"] = _refresh_count
+
+st.sidebar.caption(
+    f"最終更新: {st.session_state['last_refresh']}\n\n"
+    f"Data Source: yfinance + portfolio.csv"
+)
 
 
 # =====================================================================
@@ -489,11 +554,6 @@ else:
 st.markdown("### 🔄 月次売買アクティビティ")
 
 
-@st.cache_data(ttl=300, show_spinner="取引データを集計中...")
-def load_trade_activity():
-    return get_trade_activity()
-
-
 trade_act_df = load_trade_activity()
 if not trade_act_df.empty:
     col_flow, col_tbl = st.columns([2, 1])
@@ -557,6 +617,5 @@ else:
 st.markdown("---")
 st.caption(
     "Data provided by Yahoo Finance via yfinance. "
-    "Values are estimates and may differ from actual brokerage accounts. "
-    f"Generated at {snapshot.get('as_of', 'N/A')}"
+    "Values are estimates and may differ from actual brokerage accounts."
 )
