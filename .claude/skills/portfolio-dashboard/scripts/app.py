@@ -38,6 +38,7 @@ from components.data_loader import (
     compute_correlation_matrix,
     compute_weight_drift,
     get_benchmark_series,
+    run_dashboard_health_check,
 )
 from components.charts import (
     build_total_chart,
@@ -141,6 +142,52 @@ st.markdown("""
         border-top: 1px solid rgba(148,163,184,0.2);
         margin: 28px 0 20px 0;
     }
+    /* Sell alert banner */
+    .sell-alert {
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
+        border-left: 4px solid;
+    }
+    .sell-alert-critical {
+        background: rgba(248,113,113,0.12);
+        border-left-color: #f87171;
+    }
+    .sell-alert-warning {
+        background: rgba(251,191,36,0.12);
+        border-left-color: #fbbf24;
+    }
+    .sell-alert-info {
+        background: rgba(96,165,250,0.12);
+        border-left-color: #60a5fa;
+    }
+    .sell-alert-header {
+        font-weight: 700;
+        font-size: 0.95rem;
+        margin-bottom: 4px;
+    }
+    .sell-alert-reason {
+        font-size: 0.88rem;
+        opacity: 0.85;
+        margin-bottom: 4px;
+    }
+    .sell-alert-detail {
+        font-size: 0.82rem;
+        opacity: 0.7;
+        padding-left: 12px;
+    }
+    /* Health card */
+    .health-card {
+        background: var(--secondary-background-color);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 8px;
+        border-left: 4px solid;
+    }
+    .health-card-healthy { border-left-color: #4ade80; }
+    .health-card-early_warning { border-left-color: #fbbf24; }
+    .health-card-caution { border-left-color: #fb923c; }
+    .health-card-exit { border-left-color: #f87171; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -162,6 +209,11 @@ def load_trade_activity():
     return get_trade_activity()
 
 
+@st.cache_data(ttl=600, show_spinner="ヘルスチェック実行中...")
+def load_health_check():
+    return run_dashboard_health_check()
+
+
 # =====================================================================
 # サイドバー（タブ: 目次 / 設定）
 # =====================================================================
@@ -174,6 +226,7 @@ with _tab_toc:
     st.markdown(
         '<div style="display:flex; flex-direction:column; gap:2px; padding:4px 0;">'
         '<a class="toc-link" href="#summary">📈 サマリー</a>'
+        '<a class="toc-link" href="#health-check">🏥 ヘルスチェック</a>'
         '<a class="toc-link" href="#total-chart">📊 総資産推移</a>'
         '<a class="toc-link" href="#invested-chart">💰 投資額 vs 評価額</a>'
         '<a class="toc-link" href="#projection">🔮 将来推定</a>'
@@ -301,6 +354,7 @@ if st.sidebar.button("🔄 今すぐ更新", use_container_width=True):
     load_snapshot.clear()
     load_history.clear()
     load_trade_activity.clear()
+    load_health_check.clear()
     _cache_dir = Path(_SCRIPT_DIR).resolve().parents[4] / "data" / "cache" / "price_history"
     if _cache_dir.exists():
         for f in _cache_dir.glob("*.csv"):
@@ -316,6 +370,7 @@ if _refresh_count > st.session_state.get("_prev_refresh_count", 0):
     load_snapshot.clear()
     load_history.clear()
     load_trade_activity.clear()
+    load_health_check.clear()
     st.session_state["last_refresh"] = time.strftime("%Y-%m-%d %H:%M:%S")
     st.session_state["_prev_refresh_count"] = _refresh_count
 
@@ -551,6 +606,216 @@ if not history_df.empty:
                 )
             _worst_html += '</div>'
             st.markdown(_worst_html, unsafe_allow_html=True)
+
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+# =====================================================================
+# ヘルスチェック & 売りアラート
+# =====================================================================
+st.markdown('<div id="health-check"></div>', unsafe_allow_html=True)
+st.markdown("### 🏥 ヘルスチェック")
+
+try:
+    health_data = load_health_check()
+except Exception as _hc_err:
+    st.warning(f"ヘルスチェックの実行に失敗しました: {_hc_err}")
+    health_data = None
+
+if health_data is not None:
+    hc_summary = health_data["summary"]
+    hc_positions = health_data["positions"]
+    sell_alerts = health_data["sell_alerts"]
+
+    # --- サマリーカード ---
+    hc_cols = st.columns(5)
+    _hc_items = [
+        ("合計", hc_summary["total"], ""),
+        ("✅ 健全", hc_summary["healthy"], "#4ade80"),
+        ("⚡ 早期警告", hc_summary["early_warning"], "#fbbf24"),
+        ("⚠️ 注意", hc_summary["caution"], "#fb923c"),
+        ("🚨 撤退", hc_summary["exit"], "#f87171"),
+    ]
+    for i, (label, count, color) in enumerate(_hc_items):
+        with hc_cols[i]:
+            st.markdown(_risk_card(label, str(count), color), unsafe_allow_html=True)
+
+    # --- 売りアラート通知 ---
+    if sell_alerts:
+        st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+        st.markdown("#### 🔔 売りタイミング通知")
+
+        for alert in sell_alerts:
+            urgency = alert["urgency"]
+            _urgency_emoji = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}
+            _urgency_label = {"critical": "緊急", "warning": "注意", "info": "参考"}
+
+            # Build detail HTML
+            detail_html = ""
+            for d in alert.get("details", []):
+                detail_html += f'<div class="sell-alert-detail">• {d}</div>'
+
+            pnl = alert.get("pnl_pct", 0)
+            pnl_color = "#4ade80" if pnl >= 0 else "#f87171"
+            pnl_text = f'<span style="color:{pnl_color}; font-weight:600;">{pnl:+.1f}%</span>'
+
+            st.markdown(
+                f'<div class="sell-alert sell-alert-{urgency}">'
+                f'<div class="sell-alert-header">'
+                f'{_urgency_emoji.get(urgency, "")} '
+                f'[{_urgency_label.get(urgency, "")}] '
+                f'{alert["name"]} ({alert["symbol"]}) '
+                f'— {alert["action"]} '
+                f'(含み損益: {pnl_text})'
+                f'</div>'
+                f'<div class="sell-alert-reason">{alert["reason"]}</div>'
+                f'{detail_html}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        st.success("🟢 現在、売りタイミングの通知はありません")
+
+    # --- 銘柄別ヘルスチェック詳細 ---
+    st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+
+    with st.expander("📋 銘柄別ヘルスチェック詳細", expanded=False):
+        if hc_positions:
+            # テーブル表示
+            hc_table_data = []
+            for pos in hc_positions:
+                alert_level = pos["alert_level"]
+                _level_display = {
+                    "none": "✅ 健全",
+                    "early_warning": "⚡ 早期警告",
+                    "caution": "⚠️ 注意",
+                    "exit": "🚨 撤退",
+                }
+                _trend_emoji = {
+                    "上昇": "📈",
+                    "横ばい": "➡️",
+                    "下降": "📉",
+                    "不明": "❓",
+                }
+                rsi_val = pos.get("rsi", float("nan"))
+                try:
+                    import math
+                    rsi_str = f"{rsi_val:.1f}" if not math.isnan(rsi_val) else "N/A"
+                except (TypeError, ValueError):
+                    rsi_str = "N/A"
+
+                stability_emoji = pos.get("return_stability_emoji", "")
+                long_term = pos.get("long_term_label", "")
+
+                reasons_str = " / ".join(pos.get("alert_reasons", [])) if pos.get("alert_reasons") else "-"
+
+                hc_table_data.append({
+                    "銘柄": f"{pos['name']}",
+                    "シンボル": pos["symbol"],
+                    "判定": _level_display.get(alert_level, alert_level),
+                    "トレンド": f"{_trend_emoji.get(pos['trend'], '')} {pos['trend']}",
+                    "RSI": rsi_str,
+                    "変化品質": pos.get("change_quality", ""),
+                    "長期適性": long_term,
+                    "還元安定度": stability_emoji,
+                    "含み損益(%)": pos.get("pnl_pct", 0),
+                    "理由": reasons_str,
+                })
+
+            hc_df = pd.DataFrame(hc_table_data)
+
+            # アラートレベルでソート（exit > caution > early_warning > none）
+            _sort_order = {"🚨 撤退": 0, "⚠️ 注意": 1, "⚡ 早期警告": 2, "✅ 健全": 3}
+            hc_df["_sort"] = hc_df["判定"].map(_sort_order).fillna(9)
+            hc_df = hc_df.sort_values("_sort").drop(columns=["_sort"])
+
+            st.dataframe(
+                hc_df.style.format({
+                    "含み損益(%)": "{:+.1f}%",
+                }).map(
+                    lambda v: "color: #4ade80" if isinstance(v, (int, float)) and v > 0
+                    else ("color: #f87171" if isinstance(v, (int, float)) and v < 0 else ""),
+                    subset=["含み損益(%)"],
+                ),
+                use_container_width=True,
+                height=min(400, 60 + len(hc_table_data) * 38),
+            )
+
+            # --- 個別銘柄カード（アラートのみ展開） ---
+            alert_positions = [p for p in hc_positions if p["alert_level"] != "none"]
+            if alert_positions:
+                st.markdown("##### ⚡ アラート銘柄の詳細")
+                for pos in alert_positions:
+                    alert_level = pos["alert_level"]
+                    _card_border_color = {
+                        "early_warning": "#fbbf24",
+                        "caution": "#fb923c",
+                        "exit": "#f87171",
+                    }.get(alert_level, "#94a3b8")
+
+                    indicators = pos.get("indicators", {})
+                    ind_parts = []
+                    for ind_name, ind_val in indicators.items():
+                        _ind_labels = {
+                            "accruals": "アクルーアルズ",
+                            "revenue_acceleration": "売上加速",
+                            "fcf_yield": "FCF利回り",
+                            "roe_trend": "ROE趨勢",
+                        }
+                        label = _ind_labels.get(ind_name, ind_name)
+                        if isinstance(ind_val, bool):
+                            emoji = "✅" if ind_val else "❌"
+                            ind_parts.append(f"{emoji} {label}")
+                        elif isinstance(ind_val, (int, float)):
+                            emoji = "✅" if ind_val > 0 else "❌"
+                            ind_parts.append(f"{emoji} {label}")
+
+                    ind_html = " &nbsp;|&nbsp; ".join(ind_parts) if ind_parts else ""
+
+                    trap_html = ""
+                    if pos.get("value_trap"):
+                        trap_reasons = " / ".join(pos.get("value_trap_reasons", []))
+                        trap_html = (
+                            f'<div style="margin-top:6px; padding:6px 10px;'
+                            f' background:rgba(248,113,113,0.1); border-radius:6px;'
+                            f' font-size:0.82rem;">'
+                            f'🪤 バリュートラップ: {trap_reasons}</div>'
+                        )
+
+                    reasons_html = ""
+                    for r in pos.get("alert_reasons", []):
+                        reasons_html += f'<div style="font-size:0.82rem; padding:1px 0;">• {r}</div>'
+
+                    cross_html = ""
+                    cross_signal = pos.get("cross_signal", "none")
+                    if cross_signal != "none":
+                        _cross_emoji = "🟡" if cross_signal == "golden_cross" else "💀"
+                        _cross_label = "ゴールデンクロス" if cross_signal == "golden_cross" else "デッドクロス"
+                        days = pos.get("days_since_cross", "?")
+                        cross_html = f' | {_cross_emoji} {_cross_label}（{days}日前）'
+
+                    st.markdown(
+                        f'<div class="health-card health-card-{alert_level}">'
+                        f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                        f'<span style="font-weight:700; font-size:1.0rem;">'
+                        f'{pos["alert_emoji"]} {pos["name"]} ({pos["symbol"]})</span>'
+                        f'<span style="font-size:0.85rem; opacity:0.8;">'
+                        f'{pos["alert_label"]}</span>'
+                        f'</div>'
+                        f'<div style="font-size:0.85rem; margin-top:6px; opacity:0.8;">'
+                        f'トレンド: {pos["trend"]} | RSI: {pos.get("rsi", 0):.1f} '
+                        f'| SMA50: {pos.get("sma50", 0):,.1f} '
+                        f'| SMA200: {pos.get("sma200", 0):,.1f}'
+                        f'{cross_html}'
+                        f'</div>'
+                        f'<div style="font-size:0.85rem; margin-top:4px;">{ind_html}</div>'
+                        f'<div style="margin-top:6px;">{reasons_html}</div>'
+                        f'{trap_html}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+        else:
+            st.info("保有銘柄データがありません")
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 

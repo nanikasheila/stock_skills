@@ -38,6 +38,22 @@ from src.core.common import is_cash
 from src.core.ticker_utils import infer_currency
 from src.data import yahoo_client
 from src.data.history_store import load_history
+from src.core.health_check import (
+    check_trend_health,
+    check_change_quality,
+    check_long_term_suitability,
+    compute_alert_level,
+    ALERT_NONE,
+    ALERT_EARLY_WARNING,
+    ALERT_CAUTION,
+    ALERT_EXIT,
+)
+from src.core.screening.indicators import (
+    calculate_shareholder_return,
+    calculate_shareholder_return_history,
+    assess_return_stability,
+)
+from src.core.value_trap import detect_value_trap
 
 
 # ---------------------------------------------------------------------------
@@ -1207,3 +1223,300 @@ def compute_weight_drift(
     # 乖離の大きい順にソート
     results.sort(key=lambda x: abs(x["drift_pct"]), reverse=True)
     return results
+
+
+# ---------------------------------------------------------------------------
+# ヘルスチェック（ダッシュボード用）
+# ---------------------------------------------------------------------------
+
+def run_dashboard_health_check(
+    csv_path: str = DEFAULT_CSV_PATH,
+) -> dict:
+    """ポートフォリオ全銘柄のヘルスチェックを実行する.
+
+    既存の health_check.py のロジックを呼び出し、
+    ダッシュボード表示用に結果を整形する。
+
+    Returns
+    -------
+    dict
+        positions: list[dict]  各銘柄のヘルスチェック結果
+        alerts: list[dict]     アラートのある銘柄のみ
+        sell_alerts: list[dict] 売りタイミング通知
+        summary: dict          サマリー統計
+    """
+    positions = load_portfolio(csv_path)
+
+    empty_summary = {
+        "total": 0,
+        "healthy": 0,
+        "early_warning": 0,
+        "caution": 0,
+        "exit": 0,
+    }
+
+    if not positions:
+        return {
+            "positions": [],
+            "alerts": [],
+            "sell_alerts": [],
+            "summary": empty_summary,
+        }
+
+    results: list[dict] = []
+    alerts: list[dict] = []
+    counts = {"healthy": 0, "early_warning": 0, "caution": 0, "exit": 0}
+
+    for pos in positions:
+        symbol = pos["symbol"]
+
+        # Skip cash positions
+        if is_cash(symbol):
+            continue
+
+        # 1. Trend analysis (1y price history)
+        hist = yahoo_client.get_price_history(symbol, period="1y")
+        trend_health = check_trend_health(hist)
+
+        # 2. Change quality (alpha signal)
+        stock_detail = yahoo_client.get_stock_detail(symbol)
+        if stock_detail is None:
+            stock_detail = {}
+        change_quality = check_change_quality(stock_detail)
+
+        # 3. Shareholder return stability
+        sh_return = calculate_shareholder_return(stock_detail)
+        sh_history = calculate_shareholder_return_history(stock_detail)
+        sh_stability = assess_return_stability(sh_history)
+
+        # 4. Alert level
+        alert = compute_alert_level(
+            trend_health, change_quality,
+            stock_detail=stock_detail,
+            return_stability=sh_stability,
+        )
+
+        # 5. Long-term suitability
+        long_term = check_long_term_suitability(
+            stock_detail, shareholder_return_data=sh_return,
+        )
+
+        # 6. Value trap detection
+        value_trap = detect_value_trap(stock_detail)
+
+        # PnL from portfolio
+        shares = pos["shares"]
+        cost_price = pos["cost_price"]
+        current_price = trend_health.get("current_price", 0)
+        if current_price and cost_price:
+            pnl_pct = ((current_price / cost_price) - 1) * 100
+        else:
+            pnl_pct = 0
+
+        result = {
+            "symbol": symbol,
+            "name": pos.get("memo") or symbol,
+            "shares": shares,
+            "cost_price": cost_price,
+            "current_price": current_price,
+            "pnl_pct": round(pnl_pct, 2),
+            "trend": trend_health.get("trend", "不明"),
+            "rsi": trend_health.get("rsi", float("nan")),
+            "sma50": trend_health.get("sma50", 0),
+            "sma200": trend_health.get("sma200", 0),
+            "price_above_sma50": trend_health.get("price_above_sma50", False),
+            "price_above_sma200": trend_health.get("price_above_sma200", False),
+            "cross_signal": trend_health.get("cross_signal", "none"),
+            "days_since_cross": trend_health.get("days_since_cross"),
+            "cross_date": trend_health.get("cross_date"),
+            "change_quality": change_quality.get("quality_label", ""),
+            "change_score": change_quality.get("change_score", 0),
+            "indicators": change_quality.get("indicators", {}),
+            "alert_level": alert["level"],
+            "alert_emoji": alert["emoji"],
+            "alert_label": alert["label"],
+            "alert_reasons": alert["reasons"],
+            "long_term_label": long_term.get("label", ""),
+            "long_term_summary": long_term.get("summary", ""),
+            "value_trap": value_trap.get("is_trap", False),
+            "value_trap_reasons": value_trap.get("reasons", []),
+            "return_stability": sh_stability.get("stability", ""),
+            "return_stability_emoji": _stability_emoji(
+                sh_stability.get("stability", "")
+            ),
+        }
+        results.append(result)
+
+        if alert["level"] != ALERT_NONE:
+            alerts.append(result)
+            counts[alert["level"]] = counts.get(alert["level"], 0) + 1
+        else:
+            counts["healthy"] += 1
+
+    # 売りタイミング通知を生成
+    sell_alerts = _compute_sell_alerts(results)
+
+    return {
+        "positions": results,
+        "alerts": alerts,
+        "sell_alerts": sell_alerts,
+        "summary": {
+            "total": len(results),
+            **counts,
+        },
+    }
+
+
+def _stability_emoji(stability: str) -> str:
+    """還元安定度のエモジを返す."""
+    return {
+        "stable": "✅",
+        "increasing": "📈",
+        "temporary": "⚠️",
+        "decreasing": "📉",
+    }.get(stability, "")
+
+
+def _compute_sell_alerts(positions: list[dict]) -> list[dict]:
+    """ヘルスチェック結果から売りタイミング通知を生成する.
+
+    以下の条件で通知を生成:
+    1. EXIT アラート → 即座に売却検討
+    2. CAUTION + 含み損 → 損切り検討
+    3. デッドクロス直近発生 → トレンド転換注意
+    4. RSI 30以下 → 売られ過ぎ（反発 or 更なる下落）
+    5. バリュートラップ検出 → 割安罠からの撤退検討
+    6. 含み益が大きい + トレンド下降 → 利確検討
+
+    Returns
+    -------
+    list[dict]
+        各通知: symbol, name, urgency (critical/warning/info),
+        action, reason, details
+    """
+    alerts: list[dict] = []
+
+    for pos in positions:
+        symbol = pos["symbol"]
+        name = pos["name"]
+        alert_level = pos["alert_level"]
+        pnl_pct = pos["pnl_pct"]
+        trend = pos["trend"]
+        rsi = pos.get("rsi", float("nan"))
+        cross_signal = pos.get("cross_signal", "none")
+        days_since_cross = pos.get("days_since_cross")
+        value_trap = pos.get("value_trap", False)
+        reasons = pos.get("alert_reasons", [])
+
+        # 1. EXIT → 即売却検討（最高優先度）
+        if alert_level == ALERT_EXIT:
+            alerts.append({
+                "symbol": symbol,
+                "name": name,
+                "urgency": "critical",
+                "action": "売却検討",
+                "reason": "EXIT シグナル: テクニカル崩壊 + ファンダメンタル悪化",
+                "details": reasons,
+                "pnl_pct": pnl_pct,
+            })
+            continue  # EXIT の場合は他の通知は不要
+
+        # 2. CAUTION + 含み損 → 損切り検討
+        if alert_level == ALERT_CAUTION and pnl_pct < -5:
+            alerts.append({
+                "symbol": symbol,
+                "name": name,
+                "urgency": "critical",
+                "action": "損切り検討",
+                "reason": f"注意アラート & 含み損 {pnl_pct:+.1f}%",
+                "details": reasons,
+                "pnl_pct": pnl_pct,
+            })
+            continue
+
+        # 3. CAUTION（含み損なし）→ 警告
+        if alert_level == ALERT_CAUTION:
+            alerts.append({
+                "symbol": symbol,
+                "name": name,
+                "urgency": "warning",
+                "action": "注視・一部売却検討",
+                "reason": "注意アラート発生",
+                "details": reasons,
+                "pnl_pct": pnl_pct,
+            })
+
+        # 4. 含み益 +20% 以上 + トレンド下降 → 利確検討
+        if pnl_pct >= 20 and trend == "下降":
+            alerts.append({
+                "symbol": symbol,
+                "name": name,
+                "urgency": "warning",
+                "action": "利確検討",
+                "reason": f"含み益 {pnl_pct:+.1f}% だがトレンド下降中",
+                "details": [
+                    f"含み益 {pnl_pct:+.1f}% を確保できるうちに一部利確を検討",
+                    "トレンド転換で含み益が縮小するリスク",
+                ],
+                "pnl_pct": pnl_pct,
+            })
+
+        # 5. 直近デッドクロス（10日以内）→ 注意
+        if (cross_signal == "death_cross"
+                and days_since_cross is not None
+                and days_since_cross <= 10):
+            # EXIT/CAUTION で既に通知した場合はスキップ
+            if alert_level not in (ALERT_EXIT, ALERT_CAUTION):
+                alerts.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "urgency": "warning",
+                    "action": "トレンド転換注意",
+                    "reason": f"デッドクロス発生（{days_since_cross}日前）",
+                    "details": [
+                        f"SMA50がSMA200を下回った（{pos.get('cross_date', '')}）",
+                        "中長期トレンドの下降転換シグナル",
+                    ],
+                    "pnl_pct": pnl_pct,
+                })
+
+        # 6. バリュートラップ検出 → 注意
+        if value_trap:
+            alerts.append({
+                "symbol": symbol,
+                "name": name,
+                "urgency": "warning",
+                "action": "バリュートラップ注意",
+                "reason": "見せかけの割安（低PER + 利益減少）",
+                "details": pos.get("value_trap_reasons", []),
+                "pnl_pct": pnl_pct,
+            })
+
+        # 7. RSI 30以下 → 情報
+        if not _is_nan(rsi) and rsi <= 30:
+            alerts.append({
+                "symbol": symbol,
+                "name": name,
+                "urgency": "info",
+                "action": "RSI 売られ過ぎ",
+                "reason": f"RSI = {rsi:.1f}（30以下）",
+                "details": [
+                    "売られ過ぎ水準 — 反発の可能性もあるが更なる下落リスクも",
+                    "他の指標と合わせて判断が必要",
+                ],
+                "pnl_pct": pnl_pct,
+            })
+
+    # urgency 順にソート: critical > warning > info
+    _urgency_order = {"critical": 0, "warning": 1, "info": 2}
+    alerts.sort(key=lambda x: (_urgency_order.get(x["urgency"], 9), x["symbol"]))
+    return alerts
+
+
+def _is_nan(v) -> bool:
+    """NaN 判定ヘルパー."""
+    try:
+        import math
+        return math.isnan(float(v))
+    except (TypeError, ValueError):
+        return True
