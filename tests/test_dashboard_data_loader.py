@@ -34,6 +34,13 @@ from components.data_loader import (
     compute_top_worst_performers,
 )
 
+# Phase 3 imports — conditional (may not exist in older code)
+try:
+    from components.data_loader import compute_drawdown_series, compute_rolling_sharpe
+    _HAS_PHASE3 = True
+except ImportError:
+    _HAS_PHASE3 = False
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -852,3 +859,66 @@ class TestTopWorstPerformers:
         result = compute_top_worst_performers(df, top_n=5)
         assert len(result["top"]) == 2
         assert len(result["worst"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: compute_drawdown_series / compute_rolling_sharpe
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAS_PHASE3, reason="Phase3 not available")
+class TestDrawdownSeries:
+    """ドローダウン系列テスト."""
+
+    def test_normal_drawdown(self):
+        """正常なドローダウン計算."""
+        dates = pd.date_range("2026-01-01", periods=5, freq="B")
+        # 100 -> 120 -> 110 -> 130 -> 125
+        df = pd.DataFrame({"total": [100, 120, 110, 130, 125]}, index=dates)
+        dd = compute_drawdown_series(df)
+        assert len(dd) == 5
+        assert dd.iloc[0] == pytest.approx(0.0)  # first = peak
+        assert dd.iloc[1] == pytest.approx(0.0)  # new peak
+        assert dd.iloc[2] == pytest.approx(-8.33, abs=0.1)  # 110/120-1
+        assert dd.iloc[3] == pytest.approx(0.0)  # new peak
+        assert dd.iloc[4] < 0  # 125 < 130
+
+    def test_monotonic_increase(self):
+        """単調増加ならDD常に0."""
+        dates = pd.date_range("2026-01-01", periods=5, freq="B")
+        df = pd.DataFrame({"total": [100, 110, 120, 130, 140]}, index=dates)
+        dd = compute_drawdown_series(df)
+        assert (dd == 0.0).all()
+
+    def test_empty_df(self):
+        """空DataFrameは空Series."""
+        dd = compute_drawdown_series(pd.DataFrame())
+        assert dd.empty
+
+
+@pytest.mark.skipif(not _HAS_PHASE3, reason="Phase3 not available")
+class TestRollingSharpe:
+    """ローリングSharpe比テスト."""
+
+    def test_enough_data(self):
+        """十分なデータでローリングSharpe計算."""
+        import numpy as np
+        dates = pd.date_range("2025-01-01", periods=120, freq="B")
+        np.random.seed(42)
+        values = 1_000_000 * np.cumprod(1 + np.random.normal(0.001, 0.01, 120))
+        df = pd.DataFrame({"total": values}, index=dates)
+        rs = compute_rolling_sharpe(df, window=60)
+        assert len(rs) > 0
+        # Sharpe should be finite
+        assert all(np.isfinite(rs))
+
+    def test_insufficient_data(self):
+        """ウィンドウより短いデータは空."""
+        dates = pd.date_range("2026-01-01", periods=30, freq="B")
+        df = pd.DataFrame({"total": range(100, 130)}, index=dates)
+        rs = compute_rolling_sharpe(df, window=60)
+        assert rs.empty
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        rs = compute_rolling_sharpe(pd.DataFrame())
+        assert rs.empty

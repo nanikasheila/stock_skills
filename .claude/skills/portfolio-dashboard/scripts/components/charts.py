@@ -430,3 +430,85 @@ def build_trade_flow_chart(trade_act_df: pd.DataFrame) -> go.Figure:
         legend=dict(orientation="h", yanchor="bottom", y=-0.35),
     )
     return fig
+
+
+# =====================================================================
+# ドローダウンチャート
+# =====================================================================
+
+def build_drawdown_chart(drawdown_series: "pd.Series") -> go.Figure:
+    """ドローダウン（水面下）チャートを構築して返す.
+
+    Parameters
+    ----------
+    drawdown_series : pd.Series
+        compute_drawdown_series() の出力（%、0以下の値）
+
+    Returns
+    -------
+    go.Figure
+    """
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=drawdown_series.index,
+        y=drawdown_series.values,
+        mode="lines",
+        fill="tozeroy",
+        name="ドローダウン",
+        line=dict(color="#f87171", width=1.5),
+        fillcolor="rgba(248,113,113,0.2)",
+        hovertemplate="%{x}<br>DD: %{y:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title="ドローダウン（ピークからの下落率）",
+        xaxis_title="日付",
+        yaxis_title="ドローダウン（%）",
+        height=280,
+        yaxis=dict(ticksuffix="%"),
+        showlegend=False,
+    )
+    return fig
+
+
+# =====================================================================
+# ローリングSharpe比チャート
+# =====================================================================
+
+def build_rolling_sharpe_chart(
+    rolling_sharpe: "pd.Series",
+    window: int = 60,
+) -> go.Figure:
+    """ローリングSharpe比のチャートを構築して返す.
+
+    Parameters
+    ----------
+    rolling_sharpe : pd.Series
+        compute_rolling_sharpe() の出力
+    window : int
+        ウィンドウサイズ（表示用）
+
+    Returns
+    -------
+    go.Figure
+    """
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=rolling_sharpe.index,
+        y=rolling_sharpe.values,
+        mode="lines",
+        name=f"Sharpe ({window}日)",
+        line=dict(color="#a78bfa", width=2),
+        hovertemplate="%{x}<br>Sharpe: %{y:.2f}<extra></extra>",
+    ))
+    # 基準ライン
+    fig.add_hline(y=1.0, line_dash="dash", line_color="#4ade80",
+                  annotation_text="1.0（良好）", annotation_position="bottom right")
+    fig.add_hline(y=0.0, line_dash="dot", line_color="rgba(148,163,184,0.5)")
+    fig.update_layout(
+        title=f"ローリングSharpe比（{window}日）",
+        xaxis_title="日付",
+        yaxis_title="Sharpe比",
+        height=280,
+        showlegend=False,
+    )
+    return fig

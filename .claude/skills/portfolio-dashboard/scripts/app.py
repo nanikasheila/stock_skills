@@ -33,6 +33,8 @@ from components.data_loader import (
     compute_daily_change,
     compute_benchmark_excess,
     compute_top_worst_performers,
+    compute_drawdown_series,
+    compute_rolling_sharpe,
     get_benchmark_series,
 )
 from components.charts import (
@@ -44,6 +46,8 @@ from components.charts import (
     build_individual_chart,
     build_monthly_chart,
     build_trade_flow_chart,
+    build_drawdown_chart,
+    build_rolling_sharpe_chart,
 )
 
 # =====================================================================
@@ -560,6 +564,23 @@ if not history_df.empty:
 
     fig_total = build_total_chart(history_df, chart_style, bench_series, benchmark_label)
     st.plotly_chart(fig_total, key="chart_total")
+
+    # ---------------------------------------------------------------
+    # ドローダウンチャート
+    # ---------------------------------------------------------------
+    _dd_series = compute_drawdown_series(history_df)
+    if not _dd_series.empty:
+        fig_dd = build_drawdown_chart(_dd_series)
+        st.plotly_chart(fig_dd, key="chart_drawdown")
+
+    # ---------------------------------------------------------------
+    # ローリングSharpe比
+    # ---------------------------------------------------------------
+    _rolling_window = 60
+    _rolling_sharpe = compute_rolling_sharpe(history_df, window=_rolling_window)
+    if not _rolling_sharpe.empty:
+        fig_rs = build_rolling_sharpe_chart(_rolling_sharpe, window=_rolling_window)
+        st.plotly_chart(fig_rs, key="chart_rolling_sharpe")
 
     # ---------------------------------------------------------------
     # 投資額 vs 評価額

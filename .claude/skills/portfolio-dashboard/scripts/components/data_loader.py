@@ -1018,3 +1018,77 @@ def get_benchmark_series(
     normalized = bench / bench_start_value * pf_start_value
     normalized.name = symbol
     return normalized
+
+
+# ---------------------------------------------------------------------------
+# 12. ドローダウン系列
+# ---------------------------------------------------------------------------
+
+def compute_drawdown_series(history_df: pd.DataFrame) -> pd.Series:
+    """日次のドローダウン（ピークからの下落率 %）系列を返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+
+    Returns
+    -------
+    pd.Series
+        index=Date, values=ドローダウン（%、0以下の値）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return pd.Series(dtype=float)
+
+    total = history_df["total"].dropna()
+    if len(total) < 2:
+        return pd.Series(dtype=float)
+
+    cummax = total.cummax()
+    drawdown = (total - cummax) / cummax * 100
+    return drawdown
+
+
+# ---------------------------------------------------------------------------
+# 13. ローリングSharpe比系列
+# ---------------------------------------------------------------------------
+
+def compute_rolling_sharpe(
+    history_df: pd.DataFrame,
+    window: int = 60,
+    risk_free_rate: float = 0.005,
+) -> pd.Series:
+    """ローリングSharpe比の系列を返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+    window : int
+        ローリングウィンドウ（営業日数）
+    risk_free_rate : float
+        年率リスクフリーレート
+
+    Returns
+    -------
+    pd.Series
+        index=Date, values=ローリングSharpe比（年率換算）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return pd.Series(dtype=float)
+
+    total = history_df["total"].dropna()
+    if len(total) < window + 1:
+        return pd.Series(dtype=float)
+
+    daily_returns = total.pct_change().dropna()
+    trading_days = 252
+    daily_rf = (1 + risk_free_rate) ** (1 / trading_days) - 1
+
+    rolling_mean = daily_returns.rolling(window=window).mean()
+    rolling_std = daily_returns.rolling(window=window).std()
+
+    rolling_sharpe = (
+        (rolling_mean - daily_rf) / rolling_std * np.sqrt(trading_days)
+    )
+    return rolling_sharpe.dropna()
