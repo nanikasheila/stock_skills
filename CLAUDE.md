@@ -83,6 +83,10 @@ python3 scripts/import_trade_csv.py data/history/trade/tradehistory(US)_YYYYMMDD
 python3 scripts/import_trade_csv.py data/history/trade/   # ディレクトリ内の全CSVを一括インポート
 python3 scripts/import_trade_csv.py --dry-run FILE.csv    # 保存せず解析結果だけ表示
 
+# セキュリティ・個人情報チェック
+python3 .claude/skills/security-check/scripts/run_security_check.py --verbose
+python3 .claude/skills/security-check/scripts/run_security_check.py --format json
+
 # テスト
 python3 -m pytest tests/ -q
 
@@ -103,6 +107,7 @@ Skills (.claude/skills/*/SKILL.md → scripts/*.py)
   ├─ stress-test/run_stress_test.py
   ├─ investment-note/manage_note.py  … save/list/delete (投資メモCRUD)
   ├─ graph-query/run_query.py        … 自然言語→グラフ照会
+  ├─ security-check/run_security_check.py … Gitセキュリティ・個人情報チェック
   ├─ portfolio-dashboard/run_dashboard.py … Streamlit+Plotly ブラウザダッシュボード
   │     (資産推移/ドローダウン/ローリングシャープ/ベンチマーク超過/
   │      トップワースト/ツリーマップ/相関ヒートマップ/ウェイトドリフト/
