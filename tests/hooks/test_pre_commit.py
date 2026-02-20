@@ -62,10 +62,12 @@ class TestPreCommitHook:
 
         result = subprocess.run(
             ["git", "commit", "-m", "test"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo), capture_output=True,
+            encoding="utf-8", errors="replace",
         )
         assert result.returncode != 0
-        assert "ドキュメントが更新されていません" in result.stderr or "ドキュメントが更新されていません" in result.stdout
+        output = (result.stderr or "") + (result.stdout or "")
+        assert "ドキュメントが更新されていません" in output
 
     def test_src_change_with_doc_allows_commit(self, tmp_path):
         """src/ 変更 + ドキュメント更新の場合、コミットが成功すること."""
@@ -78,7 +80,8 @@ class TestPreCommitHook:
 
         result = subprocess.run(
             ["git", "commit", "-m", "test with docs"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo), capture_output=True,
+            encoding="utf-8", errors="replace",
         )
         assert result.returncode == 0
 
@@ -91,7 +94,8 @@ class TestPreCommitHook:
 
         result = subprocess.run(
             ["git", "commit", "-m", "doc only"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo), capture_output=True,
+            encoding="utf-8", errors="replace",
         )
         assert result.returncode == 0
 
@@ -105,7 +109,8 @@ class TestPreCommitHook:
 
         result = subprocess.run(
             ["git", "commit", "-m", "scripts only"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo), capture_output=True,
+            encoding="utf-8", errors="replace",
         )
         assert result.returncode == 0
 
@@ -119,7 +124,8 @@ class TestPreCommitHook:
 
         result = subprocess.run(
             ["git", "commit", "--no-verify", "-m", "bypass"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo), capture_output=True,
+            encoding="utf-8", errors="replace",
         )
         assert result.returncode == 0
 
@@ -138,6 +144,7 @@ class TestPreCommitHook:
 
         result = subprocess.run(
             ["git", "commit", "-m", "src + rules"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=str(repo), capture_output=True,
+            encoding="utf-8", errors="replace",
         )
         assert result.returncode == 0

@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.core.indicators import (
+from src.core.screening.indicators import (
     check_eps_direction,
     check_growth_consistency,
     check_margin_deterioration,

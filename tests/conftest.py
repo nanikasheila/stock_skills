@@ -16,6 +16,45 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
 # ---------------------------------------------------------------------------
+# Auto-mock: prevent real network calls to TEI / Neo4j during tests
+# ---------------------------------------------------------------------------
+
+# Test files that test these modules directly should not be auto-mocked
+_EMBEDDING_TEST_FILES = {"test_embedding_client.py"}
+_NEO4J_TEST_FILES = {
+    "test_graph_store.py",
+    "test_graph_store_full.py",
+    "test_graph_store_portfolio.py",
+}
+
+
+@pytest.fixture(autouse=True)
+def _mock_embedding_client(request, monkeypatch):
+    """Globally mock embedding_client to avoid real TEI HTTP calls.
+
+    Skipped for embedding_client's own tests.
+    """
+    test_file = request.fspath.basename
+    if test_file in _EMBEDDING_TEST_FILES:
+        return
+    from src.data import embedding_client
+    monkeypatch.setattr(embedding_client, "is_available", lambda: False)
+    monkeypatch.setattr(embedding_client, "get_embedding", lambda text: None)
+
+
+@pytest.fixture(autouse=True)
+def _disable_neo4j(request, monkeypatch):
+    """Set NEO4J_MODE=off to prevent real Neo4j connection attempts.
+
+    Skipped for graph_store's own tests which manage mode themselves.
+    """
+    test_file = request.fspath.basename
+    if test_file in _NEO4J_TEST_FILES:
+        return
+    monkeypatch.setenv("NEO4J_MODE", "off")
+
+
+# ---------------------------------------------------------------------------
 # Fixture data loaders
 # ---------------------------------------------------------------------------
 

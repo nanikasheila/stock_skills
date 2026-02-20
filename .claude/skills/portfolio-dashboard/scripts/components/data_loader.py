@@ -57,6 +57,109 @@ from src.core.value_trap import detect_value_trap
 
 
 # ---------------------------------------------------------------------------
+# 0. 銘柄表示ラベル生成ユーティリティ
+# ---------------------------------------------------------------------------
+
+# 企業名から除去する法人格サフィックス（長い順にマッチ）
+_CORPORATE_SUFFIXES = [
+    ", Inc.", " Inc.", " Inc",
+    " Corporation", " Corp.", " Corp",
+    " Co., Ltd.", " Co.,Ltd.", " Co.",
+    " Holdings", " Holding",
+    " Group", " Limited", " Ltd.", " Ltd",
+    " plc", " PLC", " SE", " N.V.", " S.A.", " AG", " SA",
+    "株式会社", "（株）",
+]
+
+
+def _shorten_company_name(name: str, max_len: int = 8) -> str:
+    """企業名を短縮して表示用にする.
+
+    法人格サフィックスを除去し、長い名前は切り詰める。
+    CJK 文字（漢字/ひらがな/カタカナ）が多い名前は文字数で切り詰め、
+    英語名は最初の単語を使う。
+
+    Examples
+    --------
+    >>> _shorten_company_name("トヨタ自動車株式会社", 6)
+    'トヨタ自動車'
+    >>> _shorten_company_name("Apple Inc.", 8)
+    'Apple'
+    >>> _shorten_company_name("Broadcom Inc.", 8)
+    'Broadcom'
+    """
+    if not name:
+        return ""
+
+    cleaned = name
+    for suffix in _CORPORATE_SUFFIXES:
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)].rstrip()
+            break
+
+    if not cleaned:
+        cleaned = name
+
+    # CJK 判定（漢字・ひらがな・カタカナの割合が 1/3 超）
+    cjk_count = sum(
+        1
+        for c in cleaned
+        if "\u4e00" <= c <= "\u9fff"       # 漢字
+        or "\u3040" <= c <= "\u309f"       # ひらがな
+        or "\u30a0" <= c <= "\u30ff"       # カタカナ
+    )
+    is_cjk = cjk_count > len(cleaned) / 3
+
+    if is_cjk:
+        return cleaned[:max_len] if len(cleaned) > max_len else cleaned
+
+    # 英語: まずサフィックス除去後が収まるか確認
+    if len(cleaned) <= max_len:
+        return cleaned
+
+    # 最初の単語が収まるならそれを使う
+    first_word = cleaned.split()[0] if cleaned.split() else cleaned
+    if len(first_word) <= max_len:
+        return first_word
+
+    return cleaned[:max_len]
+
+
+def _build_symbol_labels(symbols: list[str]) -> dict[str, str]:
+    """銘柄シンボルのリストから表示ラベルのマップを生成する.
+
+    Yahoo Finance から取得済み（キャッシュ済み）の企業名を使い、
+    ``短縮名(シンボル)`` 形式のラベルを返す。
+    名前が取得できないシンボルはそのまま返す。
+
+    Returns
+    -------
+    dict
+        {raw_symbol: display_label}
+
+    Examples
+    --------
+    >>> _build_symbol_labels(["7203.T"])  # doctest: +SKIP
+    {"7203.T": "トヨタ(7203.T)"}
+    """
+    label_map: dict[str, str] = {}
+    for symbol in symbols:
+        try:
+            info = yahoo_client.get_stock_info(symbol)
+            name = info.get("name") if info else None
+        except Exception:
+            name = None
+
+        if name and name != symbol:
+            short_name = _shorten_company_name(name)
+            label_map[symbol] = f"{short_name}({symbol})"
+        else:
+            label_map[symbol] = symbol
+
+    return label_map
+
+
+# ---------------------------------------------------------------------------
 # 1. 現在のスナップショット（銘柄別評価額）
 # ---------------------------------------------------------------------------
 
@@ -621,6 +724,12 @@ def build_portfolio_history(
                 break
         invested_series.append(inv_val)
     result_df["invested"] = invested_series
+
+    # 銘柄列を表示用ラベルに変換（"7203.T" → "トヨタ(7203.T)" 等）
+    stock_cols = [c for c in result_df.columns if c not in ("total", "invested")]
+    if stock_cols:
+        label_map = _build_symbol_labels(stock_cols)
+        result_df = result_df.rename(columns=label_map)
 
     return result_df
 
@@ -1315,7 +1424,7 @@ def run_dashboard_health_check(
 
         result = {
             "symbol": symbol,
-            "name": pos.get("memo") or symbol,
+            "name": stock_detail.get("name") or pos.get("memo") or symbol,
             "shares": shares,
             "cost_price": cost_price,
             "current_price": current_price,

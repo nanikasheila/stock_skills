@@ -13,11 +13,13 @@ from unittest.mock import MagicMock, patch, call
 
 @pytest.fixture(autouse=True)
 def reset_driver():
-    """Reset global _driver before each test."""
+    """Reset global _driver and mode cache before each test."""
     import src.data.graph_store as gs
     gs._driver = None
+    gs._mode_cache = ("", 0.0)
     yield
     gs._driver = None
+    gs._mode_cache = ("", 0.0)
 
 
 @pytest.fixture

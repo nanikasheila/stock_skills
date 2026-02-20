@@ -27,6 +27,8 @@ from components.data_loader import (
     _save_prices_cache,
     _load_prices,
     _CACHE_TTL_SECONDS,
+    _shorten_company_name,
+    _build_symbol_labels,
     get_monthly_summary,
     get_sector_breakdown,
     compute_daily_change,
@@ -1142,3 +1144,122 @@ class TestWeightDrift:
         positions = [{"symbol": "AAA", "name": "A", "evaluation_jpy": 0,
                        "sector": "Tech"}]
         assert compute_weight_drift(positions, 0) == []
+
+
+# ---------------------------------------------------------------------------
+# 銘柄表示ラベル
+# ---------------------------------------------------------------------------
+
+class TestShortenCompanyName:
+    """企業名短縮テスト."""
+
+    def test_remove_inc_suffix(self):
+        """Inc. サフィックスを除去."""
+        assert _shorten_company_name("Apple Inc.") == "Apple"
+
+    def test_remove_corp_suffix(self):
+        """Corp. サフィックスを除去."""
+        assert _shorten_company_name("Broadcom Corp.") == "Broadcom"
+
+    def test_remove_japanese_kabushikigaisha(self):
+        """株式会社を除去."""
+        assert _shorten_company_name("トヨタ自動車株式会社") == "トヨタ自動車"
+
+    def test_truncate_long_japanese_name(self):
+        """長い日本語名を切り詰め."""
+        result = _shorten_company_name("パナソニックホールディングス", max_len=6)
+        assert result == "パナソニック"
+        assert len(result) == 6
+
+    def test_truncate_long_english_name_first_word(self):
+        """長い英語名は最初の単語を使う."""
+        result = _shorten_company_name("Alphabet Class A", max_len=8)
+        assert result == "Alphabet"
+
+    def test_short_name_unchanged(self):
+        """短い名前はそのまま."""
+        assert _shorten_company_name("DBS") == "DBS"
+
+    def test_empty_name(self):
+        """空文字列."""
+        assert _shorten_company_name("") == ""
+
+    def test_holdings_suffix(self):
+        """Holdings サフィックスを除去."""
+        assert _shorten_company_name("Palantir Holdings") == "Palantir"
+
+    def test_co_ltd_suffix(self):
+        """Co., Ltd. サフィックスを除去."""
+        result = _shorten_company_name("Sony Co., Ltd.", max_len=8)
+        assert result == "Sony"
+
+    def test_default_max_len(self):
+        """デフォルトの max_len=8 で正しく切り詰め."""
+        result = _shorten_company_name("Superlongnamewithoutsuffix")
+        assert len(result) <= 8
+
+    def test_limited_suffix(self):
+        """Limited サフィックスを除去."""
+        result = _shorten_company_name("HSBC Limited")
+        assert result == "HSBC"
+
+
+class TestBuildSymbolLabels:
+    """銘柄ラベル生成テスト."""
+
+    def test_with_name(self):
+        """企業名あり → 短縮名(シンボル) 形式."""
+        with patch("components.data_loader.yahoo_client") as mock_yc:
+            mock_yc.get_stock_info.return_value = {"name": "Toyota Motor Corp."}
+            result = _build_symbol_labels(["7203.T"])
+            assert result == {"7203.T": "Toyota(7203.T)"}
+
+    def test_without_name(self):
+        """企業名なし → シンボルそのまま."""
+        with patch("components.data_loader.yahoo_client") as mock_yc:
+            mock_yc.get_stock_info.return_value = {"name": None}
+            result = _build_symbol_labels(["UNKNOWN"])
+            assert result == {"UNKNOWN": "UNKNOWN"}
+
+    def test_name_equals_symbol(self):
+        """名前がシンボルと同じ → シンボルそのまま."""
+        with patch("components.data_loader.yahoo_client") as mock_yc:
+            mock_yc.get_stock_info.return_value = {"name": "AAPL"}
+            result = _build_symbol_labels(["AAPL"])
+            assert result == {"AAPL": "AAPL"}
+
+    def test_api_error(self):
+        """API エラー時 → シンボルそのまま."""
+        with patch("components.data_loader.yahoo_client") as mock_yc:
+            mock_yc.get_stock_info.side_effect = Exception("API error")
+            result = _build_symbol_labels(["7203.T"])
+            assert result == {"7203.T": "7203.T"}
+
+    def test_multiple_symbols(self):
+        """複数シンボルの処理."""
+        with patch("components.data_loader.yahoo_client") as mock_yc:
+            def side_effect(symbol):
+                return {
+                    "7203.T": {"name": "トヨタ自動車株式会社"},
+                    "AAPL": {"name": "Apple Inc."},
+                }.get(symbol, {"name": None})
+            mock_yc.get_stock_info.side_effect = side_effect
+
+            result = _build_symbol_labels(["7203.T", "AAPL"])
+            assert result["7203.T"] == "トヨタ自動車(7203.T)"
+            assert result["AAPL"] == "Apple(AAPL)"
+
+    def test_info_returns_none(self):
+        """get_stock_info が None を返す場合."""
+        with patch("components.data_loader.yahoo_client") as mock_yc:
+            mock_yc.get_stock_info.return_value = None
+            result = _build_symbol_labels(["7203.T"])
+            assert result == {"7203.T": "7203.T"}
+
+    def test_japanese_name_label(self):
+        """日本語名のラベル生成."""
+        with patch("components.data_loader.yahoo_client") as mock_yc:
+            mock_yc.get_stock_info.return_value = {"name": "信越化学工業株式会社"}
+            result = _build_symbol_labels(["4063.T"])
+            # 株式会社除去 → "信越化学工業" (6文字, max_len=8以下)
+            assert result == {"4063.T": "信越化学工業(4063.T)"}

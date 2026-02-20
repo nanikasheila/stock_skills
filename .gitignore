@@ -10,3 +10,6 @@ __pycache__/
 .claude/skills/stock-portfolio/data/portfolio.csv
 .claude/worktrees/
 data/models/
+
+# Test output files
+test_*.txt
