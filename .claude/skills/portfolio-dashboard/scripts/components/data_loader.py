@@ -831,7 +831,141 @@ def compute_risk_metrics(history_df: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 8. ベンチマークデータ取得
+# 8. Top/Worst パフォーマー
+# ---------------------------------------------------------------------------
+
+def compute_top_worst_performers(
+    history_df: pd.DataFrame,
+    top_n: int = 3,
+) -> dict:
+    """直近1日の銘柄別騰落率ランキングを返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力
+    top_n : int
+        上位/下位何銘柄を返すか
+
+    Returns
+    -------
+    dict
+        top: list[dict]  (symbol, change_pct, change_jpy)
+        worst: list[dict]
+    """
+    if history_df.empty or len(history_df) < 2:
+        return {"top": [], "worst": []}
+
+    stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
+    if not stock_cols:
+        return {"top": [], "worst": []}
+
+    latest = history_df.iloc[-1]
+    previous = history_df.iloc[-2]
+
+    performers = []
+    for col in stock_cols:
+        cur = float(latest.get(col, 0))
+        prev = float(previous.get(col, 0))
+        if prev > 0 and cur > 0:
+            pct = (cur / prev - 1) * 100
+            change_jpy = cur - prev
+            performers.append({
+                "symbol": col,
+                "change_pct": round(pct, 2),
+                "change_jpy": round(change_jpy, 0),
+            })
+
+    performers.sort(key=lambda x: x["change_pct"], reverse=True)
+
+    actual_n = min(top_n, len(performers))
+    return {
+        "top": performers[:actual_n],
+        "worst": performers[-actual_n:][::-1] if actual_n > 0 else [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. 前日比計算
+# ---------------------------------------------------------------------------
+
+def compute_daily_change(history_df: pd.DataFrame) -> dict:
+    """直近の前日比（金額・パーセント）を算出する.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+
+    Returns
+    -------
+    dict
+        daily_change_jpy: float  前日比（円）
+        daily_change_pct: float  前日比（%）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return {"daily_change_jpy": 0.0, "daily_change_pct": 0.0}
+
+    total = history_df["total"].dropna()
+    if len(total) < 2:
+        return {"daily_change_jpy": 0.0, "daily_change_pct": 0.0}
+
+    latest = float(total.iloc[-1])
+    previous = float(total.iloc[-2])
+    change = latest - previous
+    pct = (change / previous * 100) if previous != 0 else 0.0
+
+    return {
+        "daily_change_jpy": round(change, 0),
+        "daily_change_pct": round(pct, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. ベンチマーク超過リターン
+# ---------------------------------------------------------------------------
+
+def compute_benchmark_excess(
+    history_df: pd.DataFrame,
+    benchmark_series: pd.Series | None,
+) -> dict | None:
+    """ポートフォリオのベンチマーク超過リターンを算出する.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+    benchmark_series : pd.Series | None
+        get_benchmark_series() の出力（正規化済み）
+
+    Returns
+    -------
+    dict | None
+        portfolio_return_pct: float
+        benchmark_return_pct: float
+        excess_return_pct: float
+    """
+    if benchmark_series is None or history_df.empty or "total" not in history_df.columns:
+        return None
+
+    total = history_df["total"].dropna()
+    bench = benchmark_series.dropna()
+    if len(total) < 2 or len(bench) < 2:
+        return None
+
+    pf_return = (float(total.iloc[-1]) / float(total.iloc[0]) - 1) * 100
+    bm_return = (float(bench.iloc[-1]) / float(bench.iloc[0]) - 1) * 100
+    excess = pf_return - bm_return
+
+    return {
+        "portfolio_return_pct": round(pf_return, 2),
+        "benchmark_return_pct": round(bm_return, 2),
+        "excess_return_pct": round(excess, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 10. ベンチマークデータ取得
 # ---------------------------------------------------------------------------
 
 def get_benchmark_series(
@@ -884,3 +1018,192 @@ def get_benchmark_series(
     normalized = bench / bench_start_value * pf_start_value
     normalized.name = symbol
     return normalized
+
+
+# ---------------------------------------------------------------------------
+# 12. ドローダウン系列
+# ---------------------------------------------------------------------------
+
+def compute_drawdown_series(history_df: pd.DataFrame) -> pd.Series:
+    """日次のドローダウン（ピークからの下落率 %）系列を返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+
+    Returns
+    -------
+    pd.Series
+        index=Date, values=ドローダウン（%、0以下の値）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return pd.Series(dtype=float)
+
+    total = history_df["total"].dropna()
+    if len(total) < 2:
+        return pd.Series(dtype=float)
+
+    cummax = total.cummax()
+    drawdown = (total - cummax) / cummax * 100
+    return drawdown
+
+
+# ---------------------------------------------------------------------------
+# 13. ローリングSharpe比系列
+# ---------------------------------------------------------------------------
+
+def compute_rolling_sharpe(
+    history_df: pd.DataFrame,
+    window: int = 60,
+    risk_free_rate: float = 0.005,
+) -> pd.Series:
+    """ローリングSharpe比の系列を返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+    window : int
+        ローリングウィンドウ（営業日数）
+    risk_free_rate : float
+        年率リスクフリーレート
+
+    Returns
+    -------
+    pd.Series
+        index=Date, values=ローリングSharpe比（年率換算）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return pd.Series(dtype=float)
+
+    total = history_df["total"].dropna()
+    if len(total) < window + 1:
+        return pd.Series(dtype=float)
+
+    daily_returns = total.pct_change().dropna()
+    trading_days = 252
+    daily_rf = (1 + risk_free_rate) ** (1 / trading_days) - 1
+
+    rolling_mean = daily_returns.rolling(window=window).mean()
+    rolling_std = daily_returns.rolling(window=window).std()
+
+    rolling_sharpe = (
+        (rolling_mean - daily_rf) / rolling_std * np.sqrt(trading_days)
+    )
+    return rolling_sharpe.dropna()
+
+
+# ---------------------------------------------------------------------------
+# 14. 銘柄間相関行列
+# ---------------------------------------------------------------------------
+
+def compute_correlation_matrix(
+    history_df: pd.DataFrame,
+    min_periods: int = 20,
+) -> pd.DataFrame:
+    """保有銘柄間の日次リターン相関行列を返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。銘柄ごとの列を含む。
+    min_periods : int
+        相関計算に必要な最低データ点数。
+
+    Returns
+    -------
+    pd.DataFrame
+        銘柄×銘柄の相関行列。銘柄が2つ未満の場合は空DataFrame。
+    """
+    if history_df.empty:
+        return pd.DataFrame()
+
+    # "total" と "invested" を除いた銘柄列のみ
+    stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
+    if len(stock_cols) < 2:
+        return pd.DataFrame()
+
+    stock_df = history_df[stock_cols].dropna(how="all")
+    if len(stock_df) < min_periods:
+        return pd.DataFrame()
+
+    # 日次リターンを計算
+    daily_returns = stock_df.pct_change().dropna(how="all")
+
+    # 相関行列
+    corr = daily_returns.corr(min_periods=min_periods)
+    return corr
+
+
+# ---------------------------------------------------------------------------
+# 15. ウェイトドリフト判定
+# ---------------------------------------------------------------------------
+
+def compute_weight_drift(
+    positions: list[dict],
+    total_value_jpy: float,
+    target_weights: dict[str, float] | None = None,
+    threshold_pct: float = 5.0,
+) -> list[dict]:
+    """各銘柄の現在ウェイトと目標ウェイトの乖離を計算し、閾値超過を返す.
+
+    Parameters
+    ----------
+    positions : list[dict]
+        get_current_snapshot()["positions"]
+    total_value_jpy : float
+        ポートフォリオ総額(円)
+    target_weights : dict[str, float] | None
+        銘柄シンボル→目標ウェイト(%)のマップ。
+        None の場合は均等ウェイト（= 100 / 銘柄数）を適用。
+    threshold_pct : float
+        乖離警告の閾値(ポイント)。デフォルト5.0pp。
+
+    Returns
+    -------
+    list[dict]
+        乖離が閾値を超えた銘柄のリスト。各要素:
+        - symbol: str
+        - name: str
+        - current_pct: float  (現在ウェイト%)
+        - target_pct: float   (目標ウェイト%)
+        - drift_pct: float    (乖離幅pp, 正=オーバーウェイト)
+        - status: str         ("overweight" | "underweight")
+    """
+    if not positions or total_value_jpy <= 0:
+        return []
+
+    # Cash を除外した銘柄のみ対象
+    stock_positions = [p for p in positions if p.get("sector") != "Cash"]
+    if not stock_positions:
+        return []
+
+    n = len(stock_positions)
+    equal_weight = 100.0 / n if n > 0 else 0
+
+    results = []
+    for p in stock_positions:
+        symbol = p["symbol"]
+        current_pct = p["evaluation_jpy"] / total_value_jpy * 100
+
+        if target_weights and symbol in target_weights:
+            target_pct = target_weights[symbol]
+        else:
+            target_pct = equal_weight
+
+        drift = current_pct - target_pct
+
+        if abs(drift) >= threshold_pct:
+            results.append({
+                "symbol": symbol,
+                "name": p.get("name", symbol),
+                "current_pct": round(current_pct, 1),
+                "target_pct": round(target_pct, 1),
+                "drift_pct": round(drift, 1),
+                "status": "overweight" if drift > 0 else "underweight",
+            })
+
+    # 乖離の大きい順にソート
+    results.sort(key=lambda x: abs(x["drift_pct"]), reverse=True)
+    return results

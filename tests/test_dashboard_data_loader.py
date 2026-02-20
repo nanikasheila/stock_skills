@@ -29,7 +29,31 @@ from components.data_loader import (
     _CACHE_TTL_SECONDS,
     get_monthly_summary,
     get_sector_breakdown,
+    compute_daily_change,
+    compute_benchmark_excess,
+    compute_top_worst_performers,
 )
+
+# Phase 3 imports — conditional (may not exist in older code)
+try:
+    from components.data_loader import compute_drawdown_series, compute_rolling_sharpe
+    _HAS_PHASE3 = True
+except ImportError:
+    _HAS_PHASE3 = False
+
+# Phase 4 imports — conditional
+try:
+    from components.data_loader import compute_correlation_matrix
+    _HAS_PHASE4 = True
+except ImportError:
+    _HAS_PHASE4 = False
+
+# Phase 5 imports — conditional
+try:
+    from components.data_loader import compute_weight_drift
+    _HAS_PHASE5 = True
+except ImportError:
+    _HAS_PHASE5 = False
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +739,406 @@ class TestComputeRealizedPnl:
         result = _compute_realized_pnl(trades, self.FX)
         # Fallback to global FX (150): P&L = 10*(120-100)*150 = 30,000
         assert result["by_symbol"]["X"] == pytest.approx(30_000.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: compute_daily_change
+# ---------------------------------------------------------------------------
+
+class TestComputeDailyChange:
+    """前日比計算テスト."""
+
+    def test_normal_change(self):
+        """正常な前日比の算出."""
+        dates = pd.date_range("2026-02-17", periods=5, freq="B")
+        df = pd.DataFrame({"total": [1_000_000, 1_010_000, 1_020_000, 1_015_000, 1_030_000]}, index=dates)
+        result = compute_daily_change(df)
+        assert result["daily_change_jpy"] == pytest.approx(15_000.0)
+        assert result["daily_change_pct"] == pytest.approx(
+            (1_030_000 / 1_015_000 - 1) * 100, abs=0.01
+        )
+
+    def test_negative_change(self):
+        """下落時の前日比."""
+        dates = pd.date_range("2026-02-17", periods=3, freq="B")
+        df = pd.DataFrame({"total": [1_000_000, 1_050_000, 990_000]}, index=dates)
+        result = compute_daily_change(df)
+        assert result["daily_change_jpy"] < 0
+        assert result["daily_change_pct"] < 0
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        result = compute_daily_change(pd.DataFrame())
+        assert result["daily_change_jpy"] == 0.0
+        assert result["daily_change_pct"] == 0.0
+
+    def test_single_row(self):
+        """1行のみ（前日なし）."""
+        df = pd.DataFrame({"total": [1_000_000]}, index=pd.date_range("2026-02-17", periods=1))
+        result = compute_daily_change(df)
+        assert result["daily_change_jpy"] == 0.0
+        assert result["daily_change_pct"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: compute_benchmark_excess
+# ---------------------------------------------------------------------------
+
+class TestComputeBenchmarkExcess:
+    """ベンチマーク超過リターン計算テスト."""
+
+    def test_outperformance(self):
+        """PFがベンチマークを上回る場合."""
+        dates = pd.date_range("2026-01-01", periods=60, freq="B")
+        df = pd.DataFrame({"total": [1_000_000 + i * 5000 for i in range(60)]}, index=dates)
+        bench = pd.Series([1_000_000 + i * 3000 for i in range(60)], index=dates)
+        result = compute_benchmark_excess(df, bench)
+        assert result is not None
+        assert result["excess_return_pct"] > 0
+        assert result["portfolio_return_pct"] > result["benchmark_return_pct"]
+
+    def test_underperformance(self):
+        """PFがベンチマークを下回る場合."""
+        dates = pd.date_range("2026-01-01", periods=60, freq="B")
+        df = pd.DataFrame({"total": [1_000_000 + i * 2000 for i in range(60)]}, index=dates)
+        bench = pd.Series([1_000_000 + i * 5000 for i in range(60)], index=dates)
+        result = compute_benchmark_excess(df, bench)
+        assert result is not None
+        assert result["excess_return_pct"] < 0
+
+    def test_no_benchmark(self):
+        """ベンチマーク未指定."""
+        dates = pd.date_range("2026-01-01", periods=10, freq="B")
+        df = pd.DataFrame({"total": [1_000_000] * 10}, index=dates)
+        result = compute_benchmark_excess(df, None)
+        assert result is None
+
+    def test_empty_history(self):
+        """空の履歴."""
+        bench = pd.Series([100, 110], index=pd.date_range("2026-01-01", periods=2))
+        result = compute_benchmark_excess(pd.DataFrame(), bench)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: compute_top_worst_performers
+# ---------------------------------------------------------------------------
+
+class TestTopWorstPerformers:
+    """Top/Worst パフォーマー算出テスト."""
+
+    def test_normal_ranking(self):
+        """正常なランキング算出."""
+        dates = pd.date_range("2026-02-17", periods=3, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110, 115],
+            "BBB": [200, 210, 200],
+            "CCC": [300, 300, 330],
+            "total": [600, 620, 645],
+        }, index=dates)
+        result = compute_top_worst_performers(df, top_n=2)
+        assert len(result["top"]) == 2
+        assert len(result["worst"]) == 2
+        # CCC が最もパフォーマンスが高い (300->330 = +10%)
+        assert result["top"][0]["symbol"] == "CCC"
+        # BBB が最もパフォーマンスが低い (210->200 = -4.76%)
+        assert result["worst"][0]["symbol"] == "BBB"
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        result = compute_top_worst_performers(pd.DataFrame())
+        assert result["top"] == []
+        assert result["worst"] == []
+
+    def test_single_stock(self):
+        """1銘柄のみ."""
+        dates = pd.date_range("2026-02-17", periods=2, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110],
+            "total": [100, 110],
+        }, index=dates)
+        result = compute_top_worst_performers(df, top_n=3)
+        assert len(result["top"]) == 1
+        assert len(result["worst"]) == 1
+        assert result["top"][0]["symbol"] == "AAA"
+
+    def test_top_n_exceeds_stocks(self):
+        """top_nが銘柄数を超える場合."""
+        dates = pd.date_range("2026-02-17", periods=2, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110],
+            "BBB": [200, 190],
+            "total": [300, 300],
+        }, index=dates)
+        result = compute_top_worst_performers(df, top_n=5)
+        assert len(result["top"]) == 2
+        assert len(result["worst"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: compute_drawdown_series / compute_rolling_sharpe
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAS_PHASE3, reason="Phase3 not available")
+class TestDrawdownSeries:
+    """ドローダウン系列テスト."""
+
+    def test_normal_drawdown(self):
+        """正常なドローダウン計算."""
+        dates = pd.date_range("2026-01-01", periods=5, freq="B")
+        # 100 -> 120 -> 110 -> 130 -> 125
+        df = pd.DataFrame({"total": [100, 120, 110, 130, 125]}, index=dates)
+        dd = compute_drawdown_series(df)
+        assert len(dd) == 5
+        assert dd.iloc[0] == pytest.approx(0.0)  # first = peak
+        assert dd.iloc[1] == pytest.approx(0.0)  # new peak
+        assert dd.iloc[2] == pytest.approx(-8.33, abs=0.1)  # 110/120-1
+        assert dd.iloc[3] == pytest.approx(0.0)  # new peak
+        assert dd.iloc[4] < 0  # 125 < 130
+
+    def test_monotonic_increase(self):
+        """単調増加ならDD常に0."""
+        dates = pd.date_range("2026-01-01", periods=5, freq="B")
+        df = pd.DataFrame({"total": [100, 110, 120, 130, 140]}, index=dates)
+        dd = compute_drawdown_series(df)
+        assert (dd == 0.0).all()
+
+    def test_empty_df(self):
+        """空DataFrameは空Series."""
+        dd = compute_drawdown_series(pd.DataFrame())
+        assert dd.empty
+
+
+@pytest.mark.skipif(not _HAS_PHASE3, reason="Phase3 not available")
+class TestRollingSharpe:
+    """ローリングSharpe比テスト."""
+
+    def test_enough_data(self):
+        """十分なデータでローリングSharpe計算."""
+        import numpy as np
+        dates = pd.date_range("2025-01-01", periods=120, freq="B")
+        np.random.seed(42)
+        values = 1_000_000 * np.cumprod(1 + np.random.normal(0.001, 0.01, 120))
+        df = pd.DataFrame({"total": values}, index=dates)
+        rs = compute_rolling_sharpe(df, window=60)
+        assert len(rs) > 0
+        # Sharpe should be finite
+        assert all(np.isfinite(rs))
+
+    def test_insufficient_data(self):
+        """ウィンドウより短いデータは空."""
+        dates = pd.date_range("2026-01-01", periods=30, freq="B")
+        df = pd.DataFrame({"total": range(100, 130)}, index=dates)
+        rs = compute_rolling_sharpe(df, window=60)
+        assert rs.empty
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        rs = compute_rolling_sharpe(pd.DataFrame())
+        assert rs.empty
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: compute_correlation_matrix / treemap / correlation chart
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAS_PHASE4, reason="Phase4 not available")
+class TestCorrelationMatrix:
+    """銘柄間相関行列テスト."""
+
+    def test_normal_correlation(self):
+        """正常な相関行列計算."""
+        import numpy as np
+        np.random.seed(42)
+        dates = pd.date_range("2025-01-01", periods=60, freq="B")
+        df = pd.DataFrame({
+            "AAA": np.cumsum(np.random.randn(60)) + 1000,
+            "BBB": np.cumsum(np.random.randn(60)) + 2000,
+            "CCC": np.cumsum(np.random.randn(60)) + 500,
+            "total": np.cumsum(np.random.randn(60)) + 3500,
+        }, index=dates)
+        corr = compute_correlation_matrix(df, min_periods=10)
+        # total は除外され、3x3行列
+        assert corr.shape == (3, 3)
+        # 対角は 1.0
+        assert corr.loc["AAA", "AAA"] == pytest.approx(1.0)
+        assert corr.loc["BBB", "BBB"] == pytest.approx(1.0)
+        # 相関値は -1〜1 の範囲
+        assert (corr.values >= -1).all() and (corr.values <= 1).all()
+
+    def test_single_stock_returns_empty(self):
+        """銘柄が1つだけなら空."""
+        dates = pd.date_range("2025-01-01", periods=30, freq="B")
+        df = pd.DataFrame({
+            "AAA": range(30),
+            "total": range(30),
+        }, index=dates)
+        corr = compute_correlation_matrix(df)
+        assert corr.empty
+
+    def test_insufficient_data(self):
+        """データ点数がmin_periodsより少ない場合は空."""
+        dates = pd.date_range("2025-01-01", periods=5, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110, 120, 130, 140],
+            "BBB": [200, 190, 210, 205, 220],
+            "total": [300, 300, 330, 335, 360],
+        }, index=dates)
+        corr = compute_correlation_matrix(df, min_periods=20)
+        assert corr.empty
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        corr = compute_correlation_matrix(pd.DataFrame())
+        assert corr.empty
+
+
+class TestTreemapChart:
+    """ツリーマップチャートテスト."""
+
+    def test_normal_treemap(self):
+        """正常なツリーマップ構築."""
+        from components.charts import build_treemap_chart
+        positions = [
+            {"symbol": "7203.T", "name": "Toyota", "evaluation_jpy": 1000000,
+             "pnl_pct": 5.0, "sector": "Consumer Cyclical"},
+            {"symbol": "AAPL", "name": "Apple Inc.", "evaluation_jpy": 2000000,
+             "pnl_pct": -3.0, "sector": "Technology"},
+            {"symbol": "MSFT", "name": "Microsoft", "evaluation_jpy": 1500000,
+             "pnl_pct": 10.0, "sector": "Technology"},
+        ]
+        fig = build_treemap_chart(positions)
+        assert fig is not None
+        # Should have treemap trace
+        assert len(fig.data) == 1
+        assert fig.data[0].type == "treemap"
+
+    def test_empty_positions(self):
+        """空ポジションはNone."""
+        from components.charts import build_treemap_chart
+        assert build_treemap_chart([]) is None
+
+    def test_missing_sector(self):
+        """セクター未設定は '不明' に分類."""
+        from components.charts import build_treemap_chart
+        positions = [
+            {"symbol": "XXX", "name": "NoSector", "evaluation_jpy": 500000,
+             "pnl_pct": 0},
+        ]
+        fig = build_treemap_chart(positions)
+        assert fig is not None
+        assert "不明" in fig.data[0].labels
+
+
+class TestCorrelationChart:
+    """相関ヒートマップチャートテスト."""
+
+    def test_normal_heatmap(self):
+        """正常なヒートマップ構築."""
+        from components.charts import build_correlation_chart
+        corr = pd.DataFrame(
+            [[1.0, 0.5, -0.3], [0.5, 1.0, 0.2], [-0.3, 0.2, 1.0]],
+            index=["AAA", "BBB", "CCC"],
+            columns=["AAA", "BBB", "CCC"],
+        )
+        fig = build_correlation_chart(corr)
+        assert fig is not None
+        assert fig.data[0].type == "heatmap"
+
+    def test_empty_matrix(self):
+        """空行列はNone."""
+        from components.charts import build_correlation_chart
+        assert build_correlation_chart(pd.DataFrame()) is None
+
+    def test_single_stock(self):
+        """1銘柄行列はNone."""
+        from components.charts import build_correlation_chart
+        corr = pd.DataFrame([[1.0]], index=["AAA"], columns=["AAA"])
+        assert build_correlation_chart(corr) is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: compute_weight_drift
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAS_PHASE5, reason="Phase5 not available")
+class TestWeightDrift:
+    """ウェイトドリフト判定テスト."""
+
+    def test_equal_weight_drift(self):
+        """均等ウェイトからの乖離検出."""
+        positions = [
+            {"symbol": "AAA", "name": "Stock A", "evaluation_jpy": 600000,
+             "sector": "Tech"},
+            {"symbol": "BBB", "name": "Stock B", "evaluation_jpy": 300000,
+             "sector": "Finance"},
+            {"symbol": "CCC", "name": "Stock C", "evaluation_jpy": 100000,
+             "sector": "Energy"},
+        ]
+        total = 1000000
+        # Equal weight = 33.3%
+        # AAA: 60% (+26.7pp), BBB: 30% (-3.3pp), CCC: 10% (-23.3pp)
+        alerts = compute_weight_drift(positions, total, threshold_pct=5.0)
+        symbols = [a["symbol"] for a in alerts]
+        assert "AAA" in symbols  # +26.7pp
+        assert "CCC" in symbols  # -23.3pp
+        # BBB is within threshold (-3.3pp < 5.0)
+        assert "BBB" not in symbols
+
+    def test_custom_target(self):
+        """カスタム目標ウェイトからの乖離."""
+        positions = [
+            {"symbol": "AAA", "name": "Stock A", "evaluation_jpy": 500000,
+             "sector": "Tech"},
+            {"symbol": "BBB", "name": "Stock B", "evaluation_jpy": 500000,
+             "sector": "Finance"},
+        ]
+        total = 1000000
+        # AAA: 50%, target 70% -> drift -20pp
+        # BBB: 50%, target 30% -> drift +20pp
+        target = {"AAA": 70.0, "BBB": 30.0}
+        alerts = compute_weight_drift(positions, total, target_weights=target,
+                                       threshold_pct=5.0)
+        assert len(alerts) == 2
+        aaa = next(a for a in alerts if a["symbol"] == "AAA")
+        assert aaa["status"] == "underweight"
+        assert aaa["drift_pct"] == pytest.approx(-20.0, abs=0.5)
+        bbb = next(a for a in alerts if a["symbol"] == "BBB")
+        assert bbb["status"] == "overweight"
+
+    def test_no_drift(self):
+        """乖離がない場合."""
+        positions = [
+            {"symbol": "AAA", "name": "A", "evaluation_jpy": 500000,
+             "sector": "Tech"},
+            {"symbol": "BBB", "name": "B", "evaluation_jpy": 500000,
+             "sector": "Tech"},
+        ]
+        # 均等=50% で実際も50%ずつ → ドリフトなし
+        alerts = compute_weight_drift(positions, 1000000)
+        assert alerts == []
+
+    def test_cash_excluded(self):
+        """Cash ポジションはドリフト計算から除外."""
+        positions = [
+            {"symbol": "JPY.CASH", "name": "Cash", "evaluation_jpy": 200000,
+             "sector": "Cash"},
+            {"symbol": "AAA", "name": "A", "evaluation_jpy": 800000,
+             "sector": "Tech"},
+        ]
+        # Cash除外 → 株式1銘柄だけ → 均等=100%
+        # AAA: 800k/1000k=80% vs target 100% → drift -20pp
+        alerts = compute_weight_drift(positions, 1000000)
+        # AAA is only stock, target = 100%, current = 80%, drift = -20pp
+        assert len(alerts) == 1
+        assert alerts[0]["symbol"] == "AAA"
+
+    def test_empty_positions(self):
+        """空ポジションは空リスト."""
+        assert compute_weight_drift([], 1000000) == []
+
+    def test_zero_total(self):
+        """総額0は空リスト."""
+        positions = [{"symbol": "AAA", "name": "A", "evaluation_jpy": 0,
+                       "sector": "Tech"}]
+        assert compute_weight_drift(positions, 0) == []

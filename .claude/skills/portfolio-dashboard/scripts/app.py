@@ -30,6 +30,13 @@ from components.data_loader import (
     get_trade_activity,
     build_projection,
     compute_risk_metrics,
+    compute_daily_change,
+    compute_benchmark_excess,
+    compute_top_worst_performers,
+    compute_drawdown_series,
+    compute_rolling_sharpe,
+    compute_correlation_matrix,
+    compute_weight_drift,
     get_benchmark_series,
 )
 from components.charts import (
@@ -41,6 +48,10 @@ from components.charts import (
     build_individual_chart,
     build_monthly_chart,
     build_trade_flow_chart,
+    build_drawdown_chart,
+    build_rolling_sharpe_chart,
+    build_treemap_chart,
+    build_correlation_chart,
 )
 
 # =====================================================================
@@ -394,9 +405,20 @@ def _risk_card(label: str, value: str, color: str = "") -> str:
 _unr_color = "#4ade80" if unrealized_pnl >= 0 else "#f87171"
 _unr_sign = "+" if unrealized_pnl >= 0 else ""
 
+# 前日比の算出
+_daily = compute_daily_change(history_df)
+_dc_jpy = _daily["daily_change_jpy"]
+_dc_pct = _daily["daily_change_pct"]
+_dc_sign = "+" if _dc_jpy >= 0 else ""
+_dc_color = "#4ade80" if _dc_jpy >= 0 else "#f87171"
+_dc_text = f"{_dc_sign}¥{_dc_jpy:,.0f}（{_dc_pct:+.2f}%）" if _dc_jpy != 0 else "--"
+_dc_sub = f'<span style="color:{_dc_color};">前日比 {_dc_text}</span>' if _dc_jpy != 0 else ""
+
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.markdown(_kpi_main("トータル資産（円換算）", f"¥{total_value:,.0f}"), unsafe_allow_html=True)
+    st.markdown(_kpi_main("トータル資産（円換算）", f"¥{total_value:,.0f}",
+                          sub=_dc_sub),
+                unsafe_allow_html=True)
 with col2:
     st.markdown(_kpi_main(
         "評価損益（含み）",
@@ -465,6 +487,71 @@ if not history_df.empty:
         st.markdown(_risk_card("Calmar", f"{risk['calmar_ratio']:.2f}"),
                     unsafe_allow_html=True)
 
+# --- ベンチマーク超過リターン ---
+if benchmark_symbol and not history_df.empty:
+    _bench_for_excess = get_benchmark_series(benchmark_symbol, history_df, period)
+    _excess = compute_benchmark_excess(history_df, _bench_for_excess)
+    if _excess is not None:
+        st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+        _ex_color = "#4ade80" if _excess["excess_return_pct"] >= 0 else "#f87171"
+        _ex_sign = "+" if _excess["excess_return_pct"] >= 0 else ""
+        ecol1, ecol2, ecol3 = st.columns(3)
+        with ecol1:
+            st.markdown(_risk_card(
+                "PFリターン",
+                f"{_excess['portfolio_return_pct']:+.1f}%",
+                "#4ade80" if _excess["portfolio_return_pct"] > 0 else "#f87171",
+            ), unsafe_allow_html=True)
+        with ecol2:
+            st.markdown(_risk_card(
+                f"{benchmark_label}リターン",
+                f"{_excess['benchmark_return_pct']:+.1f}%",
+                "#60a5fa",
+            ), unsafe_allow_html=True)
+        with ecol3:
+            st.markdown(_risk_card(
+                "超過リターン",
+                f"{_ex_sign}{_excess['excess_return_pct']:.1f}%",
+                _ex_color,
+            ), unsafe_allow_html=True)
+
+# --- Top / Worst パフォーマー ---
+if not history_df.empty:
+    _performers = compute_top_worst_performers(history_df, top_n=3)
+    _top = _performers["top"]
+    _worst = _performers["worst"]
+    if _top or _worst:
+        st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
+            _top_html = '<div class="kpi-card kpi-sub" style="text-align:left;">'
+            _top_html += '<div class="kpi-label">🟢 本日 Best</div>'
+            for p in _top:
+                _c = "#4ade80" if p["change_pct"] >= 0 else "#f87171"
+                _top_html += (
+                    f'<div style="display:flex; justify-content:space-between;'
+                    f' padding:3px 0; font-size:0.9rem;">'
+                    f'<span>{p["symbol"]}</span>'
+                    f'<span style="color:{_c}; font-weight:600;">'
+                    f'{p["change_pct"]:+.2f}%</span></div>'
+                )
+            _top_html += '</div>'
+            st.markdown(_top_html, unsafe_allow_html=True)
+        with pcol2:
+            _worst_html = '<div class="kpi-card kpi-sub" style="text-align:left;">'
+            _worst_html += '<div class="kpi-label">🔴 本日 Worst</div>'
+            for p in _worst:
+                _c = "#4ade80" if p["change_pct"] >= 0 else "#f87171"
+                _worst_html += (
+                    f'<div style="display:flex; justify-content:space-between;'
+                    f' padding:3px 0; font-size:0.9rem;">'
+                    f'<span>{p["symbol"]}</span>'
+                    f'<span style="color:{_c}; font-weight:600;">'
+                    f'{p["change_pct"]:+.2f}%</span></div>'
+                )
+            _worst_html += '</div>'
+            st.markdown(_worst_html, unsafe_allow_html=True)
+
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
 # =====================================================================
@@ -481,6 +568,23 @@ if not history_df.empty:
 
     fig_total = build_total_chart(history_df, chart_style, bench_series, benchmark_label)
     st.plotly_chart(fig_total, key="chart_total")
+
+    # ---------------------------------------------------------------
+    # ドローダウンチャート
+    # ---------------------------------------------------------------
+    _dd_series = compute_drawdown_series(history_df)
+    if not _dd_series.empty:
+        fig_dd = build_drawdown_chart(_dd_series)
+        st.plotly_chart(fig_dd, key="chart_drawdown")
+
+    # ---------------------------------------------------------------
+    # ローリングSharpe比
+    # ---------------------------------------------------------------
+    _rolling_window = 60
+    _rolling_sharpe = compute_rolling_sharpe(history_df, window=_rolling_window)
+    if not _rolling_sharpe.empty:
+        fig_rs = build_rolling_sharpe_chart(_rolling_sharpe, window=_rolling_window)
+        st.plotly_chart(fig_rs, key="chart_rolling_sharpe")
 
     # ---------------------------------------------------------------
     # 投資額 vs 評価額
@@ -623,6 +727,51 @@ with col_right:
     fig_cur = build_currency_chart(positions)
     if fig_cur is not None:
         st.plotly_chart(fig_cur, key="chart_currency")
+
+# --- 構成比ツリーマップ（フルワイド表示） ---
+st.markdown("### 🌳 構成比ツリーマップ")
+fig_treemap = build_treemap_chart(positions)
+if fig_treemap is not None:
+    st.plotly_chart(fig_treemap, use_container_width=True, key="chart_treemap")
+else:
+    st.info("ツリーマップの表示に必要なデータがありません")
+
+# --- ウェイトドリフト警告 ---
+drift_alerts = compute_weight_drift(positions, total_value)
+if drift_alerts:
+    st.markdown("### ⚖️ ウェイトドリフト警告")
+    st.caption("均等ウェイトからの乖離が5pp以上の銘柄")
+    drift_cols = st.columns(min(len(drift_alerts), 4))
+    for i, alert in enumerate(drift_alerts[:4]):
+        with drift_cols[i]:
+            if alert["status"] == "overweight":
+                icon = "🔺"
+                color = "#f59e0b"
+                label = "オーバーウェイト"
+            else:
+                icon = "🔻"
+                color = "#6366f1"
+                label = "アンダーウェイト"
+            st.markdown(
+                f'<div class="kpi-card kpi-risk" style="text-align:center;">'
+                f'<span style="font-size:0.8rem; opacity:0.7;">{icon} {label}</span><br>'
+                f'<span style="font-size:1.1rem; font-weight:600;">{alert["name"]}</span><br>'
+                f'<span style="font-size:0.85rem;">現在 {alert["current_pct"]:.1f}% '
+                f'→ 目標 {alert["target_pct"]:.1f}%</span><br>'
+                f'<span style="font-size:1.0rem; font-weight:600; color:{color};">'
+                f'{alert["drift_pct"]:+.1f}pp</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+# --- 銘柄間相関ヒートマップ ---
+if not history_df.empty:
+    corr_matrix = compute_correlation_matrix(history_df)
+    if not corr_matrix.empty:
+        st.markdown("### 🔗 銘柄間 日次リターン相関")
+        fig_corr = build_correlation_chart(corr_matrix)
+        if fig_corr is not None:
+            st.plotly_chart(fig_corr, use_container_width=True, key="chart_correlation")
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
