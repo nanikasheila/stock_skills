@@ -1,6 +1,6 @@
 # Skill Catalog
 
-8つの Claude Code Skills の一覧。すべて `.claude/skills/<name>/SKILL.md` で定義され、`scripts/*.py` で実装。
+9つの Claude Code Skills の一覧。すべて `.claude/skills/<name>/SKILL.md` で定義され、`scripts/*.py` で実装。
 
 ---
 
@@ -16,6 +16,7 @@
 | stock-portfolio | ポートフォリオ管理 (12サブコマンド) | portfolio/*.py, health_check.py, return_estimate.py |
 | investment-note | 投資メモ管理 (save/list/delete) | note_manager.py, graph_store.py |
 | graph-query | 知識グラフ自然言語照会 | graph_nl_query.py, graph_query.py |
+| portfolio-dashboard | ポートフォリオダッシュボード (Streamlit+Plotly) | portfolio/*.py, yahoo_client, history_store.py |
 
 ---
 
@@ -246,6 +247,47 @@ python3 run_query.py "最近の市況は？"
 
 ---
 
+## 9. portfolio-dashboard
+
+ポートフォリオの資産推移・リスク指標・構造分析をブラウザ上でインタラクティブに可視化。
+
+**Script**: `.claude/skills/portfolio-dashboard/scripts/run_dashboard.py`
+
+**Options**:
+- `--port PORT`: サーバーポート番号（デフォルト: 8501）
+- `--no-browser`: ブラウザを自動で開かない
+
+**Features**:
+
+| カテゴリ | 内容 |
+|:---|:---|
+| KPI カード | 総資産額・評価損益・前日比変動・リスク指標（Sharpe/Vol/MaxDD/Calmar） |
+| ベンチマーク | VTI/SPY/QQQ/^N225/1306.T 対比の超過リターン（YTD/1Y/3Y） |
+| トップ/ワースト | 期間内の最高・最低リターン銘柄を自動表示 |
+| 総資産チャート | 積み上げ面/折れ線/積み上げ棒（3スタイル切替） |
+| ドローダウン | 高値からの下落率を時系列で可視化 |
+| ローリングシャープ | 60日ローリングウィンドウのシャープレシオ推移 |
+| ツリーマップ | 評価額ベースのツリーマップ（セクター色分け） |
+| 相関ヒートマップ | 銘柄間の日次リターン相関行列 |
+| ウェイトドリフト | 初期配分と現在配分の乖離（閾値超で⚠️警告） |
+| 将来予測 | 3シナリオの将来推計（積立シミュレーション機能付き） |
+| その他 | セクター/通貨構成、月次サマリー、売買アクティビティ、CSV エクスポート |
+
+**Examples**:
+```bash
+python3 run_dashboard.py
+python3 run_dashboard.py --port 8502
+python3 run_dashboard.py --no-browser
+```
+
+**Output**: Streamlit ブラウザダッシュボード（`http://localhost:8501`）
+
+**Core Dependencies**: `src/core/portfolio/portfolio_manager.py`, `src/data/yahoo_client.py`, `src/data/history_store.py`
+
+**Additional Dependencies**: streamlit >= 1.30.0, streamlit-autorefresh >= 1.0.1, plotly >= 5.18.0, numpy
+
+---
+
 ## Skill → Core Module Dependency Map
 
 ```
@@ -270,6 +312,10 @@ stock-portfolio → portfolio/{portfolio_manager,concentration,rebalancer,simula
 investment-note → note_manager, graph_store
 
 graph-query ────→ graph_nl_query, graph_query, graph_store
+
+portfolio-dashboard → portfolio/portfolio_manager
+                       yahoo_client, history_store
+                       (streamlit, plotly, streamlit-autorefresh)
 
 (auto-context) ─→ auto_context (graph_store, graph_query)
                    ※ スキルではなく rules/graph-context.md + scripts/get_context.py

@@ -242,8 +242,21 @@ def save_trade(
     date_str: str,
     memo: str = "",
     base_dir: str = "data/history",
+    *,
+    fx_rate: float = 0.0,
+    settlement_jpy: float = 0.0,
+    settlement_usd: float = 0.0,
 ) -> str:
     """Save a trade record to JSON.
+
+    Parameters
+    ----------
+    fx_rate : float
+        1通貨単位あたりの円レート (例: USD→JPYなら150.5)。JPYの場合は1.0。
+    settlement_jpy : float
+        円建て受渡金額。
+    settlement_usd : float
+        ドル建て受渡金額（USD決済分がある場合）。
 
     Returns the absolute path of the saved file.
     """
@@ -261,6 +274,9 @@ def save_trade(
         "shares": shares,
         "price": price,
         "currency": currency,
+        "fx_rate": fx_rate,
+        "settlement_jpy": settlement_jpy,
+        "settlement_usd": settlement_usd,
         "memo": memo,
         "_saved_at": now,
     }

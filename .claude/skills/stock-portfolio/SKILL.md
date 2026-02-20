@@ -34,7 +34,7 @@ python3 .../run_portfolio.py buy --symbol <sym> --shares <n> --price <p> [--curr
 ### sell -- 売却記録
 
 ```bash
-python3 .../run_portfolio.py sell --symbol <sym> --shares <n>
+python3 .../run_portfolio.py sell --symbol <sym> --shares <n> [--price <p>] [--currency JPY] [--date YYYY-MM-DD]
 ```
 
 ### analyze -- 構造分析

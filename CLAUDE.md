@@ -104,6 +104,9 @@ Skills (.claude/skills/*/SKILL.md → scripts/*.py)
   ├─ investment-note/manage_note.py  … save/list/delete (投資メモCRUD)
   ├─ graph-query/run_query.py        … 自然言語→グラフ照会
   ├─ portfolio-dashboard/run_dashboard.py … Streamlit+Plotly ブラウザダッシュボード
+  │     (資産推移/ドローダウン/ローリングシャープ/ベンチマーク超過/
+  │      トップワースト/ツリーマップ/相関ヒートマップ/ウェイトドリフト/
+  │      将来予測/セクター通貨構成/月次サマリー/売買アクティビティ)
   └─ stock-portfolio/run_portfolio.py … snapshot/buy/sell/analyze/health/forecast/rebalance/simulate/what-if/backtest/list
       │
       │  sys.path.insert で project root を追加して src/ を import
@@ -263,7 +266,7 @@ Skills (.claude/skills/*/SKILL.md → scripts/*.py)
   Docs: docs/
           architecture.md    ─ システムアーキテクチャ（3層構成、Mermaid図、設計原則）
           neo4j-schema.md    ─ Neo4jスキーマリファレンス（19ノード、リレーション、NEO4J_MODE、Cypher例）
-          skill-catalog.md   ─ 8スキルのカタログ（入出力、依存モジュール、コマンド例）
+          skill-catalog.md   ─ 9スキルのカタログ（入出力、依存モジュール、コマンド例）
 ```
 
 ## Post-Implementation Rule

@@ -286,6 +286,33 @@ def _save_trade_market_context() -> None:
         print(f"Warning: 市況スナップショット保存失敗: {e}", file=sys.stderr)
 
 
+def _get_trade_fx_info(
+    currency: str, shares: int, price: float,
+) -> tuple[float, float, float]:
+    """取引時の為替情報を計算する.
+
+    Returns
+    -------
+    tuple
+        (fx_rate, settlement_jpy, settlement_usd)
+    """
+    if currency == "JPY":
+        fx_rate = 1.0
+        settlement_jpy = shares * price
+        settlement_usd = 0.0
+    else:
+        # 現在のFXレートを取得
+        pair = f"{currency}JPY=X"
+        try:
+            info = yahoo_client.get_stock_info(pair)
+            fx_rate = float(info["price"]) if info and info.get("price") else 0.0
+        except Exception:
+            fx_rate = 0.0
+        settlement_jpy = shares * price * fx_rate if fx_rate > 0 else 0.0
+        settlement_usd = shares * price if currency == "USD" else 0.0
+    return fx_rate, settlement_jpy, settlement_usd
+
+
 # ---------------------------------------------------------------------------
 # Command: buy
 # ---------------------------------------------------------------------------
@@ -317,7 +344,9 @@ def cmd_buy(
             }, "buy"))
             if HAS_HISTORY:
                 try:
-                    save_trade(symbol, "buy", shares, price, currency, purchase_date, memo)
+                    fx_rate, s_jpy, s_usd = _get_trade_fx_info(currency, shares, price)
+                    save_trade(symbol, "buy", shares, price, currency, purchase_date, memo,
+                               fx_rate=fx_rate, settlement_jpy=s_jpy, settlement_usd=s_usd)
                 except Exception as e:
                     print(f"Warning: 履歴保存失敗: {e}", file=sys.stderr)
                 _save_trade_market_context()
@@ -355,7 +384,9 @@ def cmd_buy(
 
     if HAS_HISTORY:
         try:
-            save_trade(symbol, "buy", shares, price, currency, purchase_date, memo)
+            fx_rate, s_jpy, s_usd = _get_trade_fx_info(currency, shares, price)
+            save_trade(symbol, "buy", shares, price, currency, purchase_date, memo,
+                       fx_rate=fx_rate, settlement_jpy=s_jpy, settlement_usd=s_usd)
         except Exception as e:
             print(f"Warning: 履歴保存失敗: {e}", file=sys.stderr)
         _save_trade_market_context()
@@ -373,8 +404,24 @@ def cmd_buy(
 # Command: sell
 # ---------------------------------------------------------------------------
 
-def cmd_sell(csv_path: str, symbol: str, shares: int) -> None:
+def cmd_sell(csv_path: str, symbol: str, shares: int, *,
+             price: float = 0.0, currency: str = "",
+             sell_date: str | None = None) -> None:
     """Record a sale (reduce shares for a symbol)."""
+    _date = sell_date or date.today().isoformat()
+    # 売却時の通貨をポートフォリオから推定（未指定の場合）
+    if not currency and HAS_PORTFOLIO_MANAGER:
+        try:
+            holdings_data = load_portfolio(csv_path)
+            for h in holdings_data:
+                if h.get("symbol") == symbol:
+                    currency = h.get("cost_currency", "JPY")
+                    break
+        except Exception:
+            pass
+    if not currency:
+        currency = "JPY"
+
     if HAS_PORTFOLIO_MANAGER:
         try:
             result = sell_position(csv_path, symbol, shares)
@@ -383,9 +430,13 @@ def cmd_sell(csv_path: str, symbol: str, shares: int) -> None:
                 print(f"売却完了: {symbol} {shares}株 (全株売却 -- ポートフォリオから削除)")
             else:
                 print(f"売却記録を追加しました: {symbol} {shares}株 (残り {remaining}株)")
+            if price:
+                print(f"売却単価: {currency} {price:,.2f}")
             if HAS_HISTORY:
                 try:
-                    save_trade(symbol, "sell", shares, 0.0, "", date.today().isoformat())
+                    fx_rate, s_jpy, s_usd = _get_trade_fx_info(currency, shares, price)
+                    save_trade(symbol, "sell", shares, price, currency, _date,
+                               fx_rate=fx_rate, settlement_jpy=s_jpy, settlement_usd=s_usd)
                 except Exception as e:
                     print(f"Warning: 履歴保存失敗: {e}", file=sys.stderr)
                 _save_trade_market_context()
@@ -411,12 +462,16 @@ def cmd_sell(csv_path: str, symbol: str, shares: int) -> None:
         print(f"売却完了: {symbol} {shares}株 (全株売却 -- ポートフォリオから削除)")
     else:
         print(f"売却記録を追加しました: {symbol} {shares}株 (残り {h['shares']}株)")
+    if price:
+        print(f"売却単価: {currency} {price:,.2f}")
 
     _fallback_save_csv(csv_path, holdings)
 
     if HAS_HISTORY:
         try:
-            save_trade(symbol, "sell", shares, 0.0, "", date.today().isoformat())
+            fx_rate, s_jpy, s_usd = _get_trade_fx_info(currency, shares, price)
+            save_trade(symbol, "sell", shares, price, currency, _date,
+                       fx_rate=fx_rate, settlement_jpy=s_jpy, settlement_usd=s_usd)
         except Exception as e:
             print(f"Warning: 履歴保存失敗: {e}", file=sys.stderr)
         _save_trade_market_context()
@@ -954,6 +1009,9 @@ def main():
     sell_parser = subparsers.add_parser("sell", help="売却記録")
     sell_parser.add_argument("--symbol", required=True, help="銘柄シンボル (例: 7203.T)")
     sell_parser.add_argument("--shares", required=True, type=int, help="売却株数")
+    sell_parser.add_argument("--price", type=float, default=0.0, help="売却単価")
+    sell_parser.add_argument("--currency", default="", help="通貨 (JPY/USD)")
+    sell_parser.add_argument("--date", default=None, help="売却日 (YYYY-MM-DD)")
 
     # analyze
     subparsers.add_parser("analyze", help="構造分析 (セクター/地域/通貨HHI)")
@@ -1072,7 +1130,8 @@ def main():
             memo=args.memo,
         )
     elif args.command == "sell":
-        cmd_sell(csv_path=csv_path, symbol=args.symbol, shares=args.shares)
+        cmd_sell(csv_path=csv_path, symbol=args.symbol, shares=args.shares,
+                price=args.price, currency=args.currency, sell_date=args.date)
     elif args.command == "analyze":
         cmd_analyze(csv_path)
     elif args.command == "list":
