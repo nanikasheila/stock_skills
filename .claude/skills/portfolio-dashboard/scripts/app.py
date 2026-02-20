@@ -40,6 +40,7 @@ from components.data_loader import (
     get_benchmark_series,
     run_dashboard_health_check,
 )
+from components.settings_store import load_settings, save_settings, DEFAULTS
 from components.charts import (
     build_total_chart,
     build_invested_chart,
@@ -238,6 +239,11 @@ with _tab_toc:
         unsafe_allow_html=True,
     )
 
+# --- 設定の読み込み ---
+if "_saved_settings" not in st.session_state:
+    st.session_state["_saved_settings"] = load_settings()
+_saved = st.session_state["_saved_settings"]
+
 # --- 設定タブ ---
 with _tab_settings:
     _PERIOD_OPTIONS = [
@@ -250,24 +256,29 @@ with _tab_settings:
         ("5年", "5y"),
         ("全期間", "max"),
     ]
+    _period_labels = [label for label, _ in _PERIOD_OPTIONS]
+    _period_saved_idx = _period_labels.index(_saved["period_label"]) if _saved["period_label"] in _period_labels else 1
 
     period_label = st.selectbox(
         "📅 表示期間",
-        options=[label for label, _ in _PERIOD_OPTIONS],
-        index=1,
+        options=_period_labels,
+        index=_period_saved_idx,
         help="株価履歴の取得期間",
     )
     period = dict(_PERIOD_OPTIONS)[period_label]
 
+    _chart_styles = ["積み上げ面", "折れ線", "積み上げ棒"]
+    _chart_saved_idx = _chart_styles.index(_saved["chart_style"]) if _saved["chart_style"] in _chart_styles else 0
+
     chart_style = st.radio(
         "🎨 チャートスタイル",
-        options=["積み上げ面", "折れ線", "積み上げ棒"],
-        index=0,
+        options=_chart_styles,
+        index=_chart_saved_idx,
     )
 
     show_invested = st.checkbox(
         "投資額 vs 評価額を表示",
-        value=True,
+        value=_saved["show_invested"],
     )
 
     # ベンチマーク選択
@@ -278,17 +289,20 @@ with _tab_settings:
         "日経225 (^N225)": "^N225",
         "TOPIX (^TPX)": "1306.T",
     }
+    _bench_labels = list(_BENCHMARK_OPTIONS.keys())
+    _bench_saved_idx = _bench_labels.index(_saved["benchmark_label"]) if _saved["benchmark_label"] in _bench_labels else 0
+
     benchmark_label = st.selectbox(
         "📏 ベンチマーク比較",
-        options=list(_BENCHMARK_OPTIONS.keys()),
-        index=0,
+        options=_bench_labels,
+        index=_bench_saved_idx,
         help="総資産推移にベンチマークのパフォーマンスを重ねて表示",
     )
     benchmark_symbol = _BENCHMARK_OPTIONS[benchmark_label]
 
     show_individual = st.checkbox(
         "銘柄別の個別チャートを表示",
-        value=False,
+        value=_saved["show_individual"],
     )
 
     st.markdown("---")
@@ -298,14 +312,14 @@ with _tab_settings:
 
     show_projection = st.checkbox(
         "目標ライン & 将来推定を表示",
-        value=True,
+        value=_saved["show_projection"],
     )
 
     target_amount = st.number_input(
         "🎯 目標資産額（万円）",
         min_value=0,
         max_value=100000,
-        value=5000,
+        value=_saved["target_amount_man"],
         step=500,
         help="総資産推移グラフに水平ラインとして表示",
     ) * 10000  # 万円→円
@@ -314,7 +328,7 @@ with _tab_settings:
         "📅 推定期間（年）",
         min_value=1,
         max_value=20,
-        value=5,
+        value=_saved["projection_years"],
         help="現在の保有銘柄のリターン推定に基づく将来推移",
     )
 
@@ -331,13 +345,32 @@ with _tab_settings:
         ("30分", 1800),
         ("1時間", 3600),
     ]
+    _refresh_labels = [label for label, _ in _REFRESH_OPTIONS]
+    _refresh_saved_idx = _refresh_labels.index(_saved["auto_refresh_label"]) if _saved["auto_refresh_label"] in _refresh_labels else 2
+
     auto_refresh_label = st.selectbox(
         "⏱ 自動更新間隔",
-        options=[label for label, _ in _REFRESH_OPTIONS],
-        index=2,  # デフォルト: 5分
+        options=_refresh_labels,
+        index=_refresh_saved_idx,
         help="選択した間隔でダッシュボードを自動リロードします",
     )
     auto_refresh_sec = dict(_REFRESH_OPTIONS)[auto_refresh_label]
+
+    # --- 設定の自動保存 ---
+    _current_settings = {
+        "period_label": period_label,
+        "chart_style": chart_style,
+        "show_invested": show_invested,
+        "benchmark_label": benchmark_label,
+        "show_individual": show_individual,
+        "show_projection": show_projection,
+        "target_amount_man": int(target_amount // 10000),
+        "projection_years": projection_years,
+        "auto_refresh_label": auto_refresh_label,
+    }
+    if _current_settings != _saved:
+        save_settings(_current_settings)
+        st.session_state["_saved_settings"] = _current_settings
 
 # 自動更新タイマー（タブ外に配置）
 if auto_refresh_sec > 0:
