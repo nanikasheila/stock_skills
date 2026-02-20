@@ -831,7 +831,86 @@ def compute_risk_metrics(history_df: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 8. ベンチマークデータ取得
+# 8. 前日比計算
+# ---------------------------------------------------------------------------
+
+def compute_daily_change(history_df: pd.DataFrame) -> dict:
+    """直近の前日比（金額・パーセント）を算出する.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+
+    Returns
+    -------
+    dict
+        daily_change_jpy: float  前日比（円）
+        daily_change_pct: float  前日比（%）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return {"daily_change_jpy": 0.0, "daily_change_pct": 0.0}
+
+    total = history_df["total"].dropna()
+    if len(total) < 2:
+        return {"daily_change_jpy": 0.0, "daily_change_pct": 0.0}
+
+    latest = float(total.iloc[-1])
+    previous = float(total.iloc[-2])
+    change = latest - previous
+    pct = (change / previous * 100) if previous != 0 else 0.0
+
+    return {
+        "daily_change_jpy": round(change, 0),
+        "daily_change_pct": round(pct, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. ベンチマーク超過リターン
+# ---------------------------------------------------------------------------
+
+def compute_benchmark_excess(
+    history_df: pd.DataFrame,
+    benchmark_series: pd.Series | None,
+) -> dict | None:
+    """ポートフォリオのベンチマーク超過リターンを算出する.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+    benchmark_series : pd.Series | None
+        get_benchmark_series() の出力（正規化済み）
+
+    Returns
+    -------
+    dict | None
+        portfolio_return_pct: float
+        benchmark_return_pct: float
+        excess_return_pct: float
+    """
+    if benchmark_series is None or history_df.empty or "total" not in history_df.columns:
+        return None
+
+    total = history_df["total"].dropna()
+    bench = benchmark_series.dropna()
+    if len(total) < 2 or len(bench) < 2:
+        return None
+
+    pf_return = (float(total.iloc[-1]) / float(total.iloc[0]) - 1) * 100
+    bm_return = (float(bench.iloc[-1]) / float(bench.iloc[0]) - 1) * 100
+    excess = pf_return - bm_return
+
+    return {
+        "portfolio_return_pct": round(pf_return, 2),
+        "benchmark_return_pct": round(bm_return, 2),
+        "excess_return_pct": round(excess, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 10. ベンチマークデータ取得
 # ---------------------------------------------------------------------------
 
 def get_benchmark_series(

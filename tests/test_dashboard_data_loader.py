@@ -29,6 +29,8 @@ from components.data_loader import (
     _CACHE_TTL_SECONDS,
     get_monthly_summary,
     get_sector_breakdown,
+    compute_daily_change,
+    compute_benchmark_excess,
 )
 
 
@@ -715,3 +717,82 @@ class TestComputeRealizedPnl:
         result = _compute_realized_pnl(trades, self.FX)
         # Fallback to global FX (150): P&L = 10*(120-100)*150 = 30,000
         assert result["by_symbol"]["X"] == pytest.approx(30_000.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: compute_daily_change
+# ---------------------------------------------------------------------------
+
+class TestComputeDailyChange:
+    """前日比計算テスト."""
+
+    def test_normal_change(self):
+        """正常な前日比の算出."""
+        dates = pd.date_range("2026-02-17", periods=5, freq="B")
+        df = pd.DataFrame({"total": [1_000_000, 1_010_000, 1_020_000, 1_015_000, 1_030_000]}, index=dates)
+        result = compute_daily_change(df)
+        assert result["daily_change_jpy"] == pytest.approx(15_000.0)
+        assert result["daily_change_pct"] == pytest.approx(
+            (1_030_000 / 1_015_000 - 1) * 100, abs=0.01
+        )
+
+    def test_negative_change(self):
+        """下落時の前日比."""
+        dates = pd.date_range("2026-02-17", periods=3, freq="B")
+        df = pd.DataFrame({"total": [1_000_000, 1_050_000, 990_000]}, index=dates)
+        result = compute_daily_change(df)
+        assert result["daily_change_jpy"] < 0
+        assert result["daily_change_pct"] < 0
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        result = compute_daily_change(pd.DataFrame())
+        assert result["daily_change_jpy"] == 0.0
+        assert result["daily_change_pct"] == 0.0
+
+    def test_single_row(self):
+        """1行のみ（前日なし）."""
+        df = pd.DataFrame({"total": [1_000_000]}, index=pd.date_range("2026-02-17", periods=1))
+        result = compute_daily_change(df)
+        assert result["daily_change_jpy"] == 0.0
+        assert result["daily_change_pct"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: compute_benchmark_excess
+# ---------------------------------------------------------------------------
+
+class TestComputeBenchmarkExcess:
+    """ベンチマーク超過リターン計算テスト."""
+
+    def test_outperformance(self):
+        """PFがベンチマークを上回る場合."""
+        dates = pd.date_range("2026-01-01", periods=60, freq="B")
+        df = pd.DataFrame({"total": [1_000_000 + i * 5000 for i in range(60)]}, index=dates)
+        bench = pd.Series([1_000_000 + i * 3000 for i in range(60)], index=dates)
+        result = compute_benchmark_excess(df, bench)
+        assert result is not None
+        assert result["excess_return_pct"] > 0
+        assert result["portfolio_return_pct"] > result["benchmark_return_pct"]
+
+    def test_underperformance(self):
+        """PFがベンチマークを下回る場合."""
+        dates = pd.date_range("2026-01-01", periods=60, freq="B")
+        df = pd.DataFrame({"total": [1_000_000 + i * 2000 for i in range(60)]}, index=dates)
+        bench = pd.Series([1_000_000 + i * 5000 for i in range(60)], index=dates)
+        result = compute_benchmark_excess(df, bench)
+        assert result is not None
+        assert result["excess_return_pct"] < 0
+
+    def test_no_benchmark(self):
+        """ベンチマーク未指定."""
+        dates = pd.date_range("2026-01-01", periods=10, freq="B")
+        df = pd.DataFrame({"total": [1_000_000] * 10}, index=dates)
+        result = compute_benchmark_excess(df, None)
+        assert result is None
+
+    def test_empty_history(self):
+        """空の履歴."""
+        bench = pd.Series([100, 110], index=pd.date_range("2026-01-01", periods=2))
+        result = compute_benchmark_excess(pd.DataFrame(), bench)
+        assert result is None

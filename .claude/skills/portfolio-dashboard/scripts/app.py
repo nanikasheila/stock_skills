@@ -30,6 +30,8 @@ from components.data_loader import (
     get_trade_activity,
     build_projection,
     compute_risk_metrics,
+    compute_daily_change,
+    compute_benchmark_excess,
     get_benchmark_series,
 )
 from components.charts import (
@@ -394,9 +396,20 @@ def _risk_card(label: str, value: str, color: str = "") -> str:
 _unr_color = "#4ade80" if unrealized_pnl >= 0 else "#f87171"
 _unr_sign = "+" if unrealized_pnl >= 0 else ""
 
+# 前日比の算出
+_daily = compute_daily_change(history_df)
+_dc_jpy = _daily["daily_change_jpy"]
+_dc_pct = _daily["daily_change_pct"]
+_dc_sign = "+" if _dc_jpy >= 0 else ""
+_dc_color = "#4ade80" if _dc_jpy >= 0 else "#f87171"
+_dc_text = f"{_dc_sign}¥{_dc_jpy:,.0f}（{_dc_pct:+.2f}%）" if _dc_jpy != 0 else "--"
+_dc_sub = f'<span style="color:{_dc_color};">前日比 {_dc_text}</span>' if _dc_jpy != 0 else ""
+
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.markdown(_kpi_main("トータル資産（円換算）", f"¥{total_value:,.0f}"), unsafe_allow_html=True)
+    st.markdown(_kpi_main("トータル資産（円換算）", f"¥{total_value:,.0f}",
+                          sub=_dc_sub),
+                unsafe_allow_html=True)
 with col2:
     st.markdown(_kpi_main(
         "評価損益（含み）",
@@ -464,6 +477,34 @@ if not history_df.empty:
     with rcol5:
         st.markdown(_risk_card("Calmar", f"{risk['calmar_ratio']:.2f}"),
                     unsafe_allow_html=True)
+
+# --- ベンチマーク超過リターン ---
+if benchmark_symbol and not history_df.empty:
+    _bench_for_excess = get_benchmark_series(benchmark_symbol, history_df, period)
+    _excess = compute_benchmark_excess(history_df, _bench_for_excess)
+    if _excess is not None:
+        st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+        _ex_color = "#4ade80" if _excess["excess_return_pct"] >= 0 else "#f87171"
+        _ex_sign = "+" if _excess["excess_return_pct"] >= 0 else ""
+        ecol1, ecol2, ecol3 = st.columns(3)
+        with ecol1:
+            st.markdown(_risk_card(
+                "PFリターン",
+                f"{_excess['portfolio_return_pct']:+.1f}%",
+                "#4ade80" if _excess["portfolio_return_pct"] > 0 else "#f87171",
+            ), unsafe_allow_html=True)
+        with ecol2:
+            st.markdown(_risk_card(
+                f"{benchmark_label}リターン",
+                f"{_excess['benchmark_return_pct']:+.1f}%",
+                "#60a5fa",
+            ), unsafe_allow_html=True)
+        with ecol3:
+            st.markdown(_risk_card(
+                "超過リターン",
+                f"{_ex_sign}{_excess['excess_return_pct']:.1f}%",
+                _ex_color,
+            ), unsafe_allow_html=True)
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
