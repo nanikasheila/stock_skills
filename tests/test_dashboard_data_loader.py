@@ -41,6 +41,13 @@ try:
 except ImportError:
     _HAS_PHASE3 = False
 
+# Phase 4 imports — conditional
+try:
+    from components.data_loader import compute_correlation_matrix
+    _HAS_PHASE4 = True
+except ImportError:
+    _HAS_PHASE4 = False
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -922,3 +929,122 @@ class TestRollingSharpe:
         """空DataFrame."""
         rs = compute_rolling_sharpe(pd.DataFrame())
         assert rs.empty
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: compute_correlation_matrix / treemap / correlation chart
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAS_PHASE4, reason="Phase4 not available")
+class TestCorrelationMatrix:
+    """銘柄間相関行列テスト."""
+
+    def test_normal_correlation(self):
+        """正常な相関行列計算."""
+        import numpy as np
+        np.random.seed(42)
+        dates = pd.date_range("2025-01-01", periods=60, freq="B")
+        df = pd.DataFrame({
+            "AAA": np.cumsum(np.random.randn(60)) + 1000,
+            "BBB": np.cumsum(np.random.randn(60)) + 2000,
+            "CCC": np.cumsum(np.random.randn(60)) + 500,
+            "total": np.cumsum(np.random.randn(60)) + 3500,
+        }, index=dates)
+        corr = compute_correlation_matrix(df, min_periods=10)
+        # total は除外され、3x3行列
+        assert corr.shape == (3, 3)
+        # 対角は 1.0
+        assert corr.loc["AAA", "AAA"] == pytest.approx(1.0)
+        assert corr.loc["BBB", "BBB"] == pytest.approx(1.0)
+        # 相関値は -1〜1 の範囲
+        assert (corr.values >= -1).all() and (corr.values <= 1).all()
+
+    def test_single_stock_returns_empty(self):
+        """銘柄が1つだけなら空."""
+        dates = pd.date_range("2025-01-01", periods=30, freq="B")
+        df = pd.DataFrame({
+            "AAA": range(30),
+            "total": range(30),
+        }, index=dates)
+        corr = compute_correlation_matrix(df)
+        assert corr.empty
+
+    def test_insufficient_data(self):
+        """データ点数がmin_periodsより少ない場合は空."""
+        dates = pd.date_range("2025-01-01", periods=5, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110, 120, 130, 140],
+            "BBB": [200, 190, 210, 205, 220],
+            "total": [300, 300, 330, 335, 360],
+        }, index=dates)
+        corr = compute_correlation_matrix(df, min_periods=20)
+        assert corr.empty
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        corr = compute_correlation_matrix(pd.DataFrame())
+        assert corr.empty
+
+
+class TestTreemapChart:
+    """ツリーマップチャートテスト."""
+
+    def test_normal_treemap(self):
+        """正常なツリーマップ構築."""
+        from components.charts import build_treemap_chart
+        positions = [
+            {"symbol": "7203.T", "name": "Toyota", "evaluation_jpy": 1000000,
+             "pnl_pct": 5.0, "sector": "Consumer Cyclical"},
+            {"symbol": "AAPL", "name": "Apple Inc.", "evaluation_jpy": 2000000,
+             "pnl_pct": -3.0, "sector": "Technology"},
+            {"symbol": "MSFT", "name": "Microsoft", "evaluation_jpy": 1500000,
+             "pnl_pct": 10.0, "sector": "Technology"},
+        ]
+        fig = build_treemap_chart(positions)
+        assert fig is not None
+        # Should have treemap trace
+        assert len(fig.data) == 1
+        assert fig.data[0].type == "treemap"
+
+    def test_empty_positions(self):
+        """空ポジションはNone."""
+        from components.charts import build_treemap_chart
+        assert build_treemap_chart([]) is None
+
+    def test_missing_sector(self):
+        """セクター未設定は '不明' に分類."""
+        from components.charts import build_treemap_chart
+        positions = [
+            {"symbol": "XXX", "name": "NoSector", "evaluation_jpy": 500000,
+             "pnl_pct": 0},
+        ]
+        fig = build_treemap_chart(positions)
+        assert fig is not None
+        assert "不明" in fig.data[0].labels
+
+
+class TestCorrelationChart:
+    """相関ヒートマップチャートテスト."""
+
+    def test_normal_heatmap(self):
+        """正常なヒートマップ構築."""
+        from components.charts import build_correlation_chart
+        corr = pd.DataFrame(
+            [[1.0, 0.5, -0.3], [0.5, 1.0, 0.2], [-0.3, 0.2, 1.0]],
+            index=["AAA", "BBB", "CCC"],
+            columns=["AAA", "BBB", "CCC"],
+        )
+        fig = build_correlation_chart(corr)
+        assert fig is not None
+        assert fig.data[0].type == "heatmap"
+
+    def test_empty_matrix(self):
+        """空行列はNone."""
+        from components.charts import build_correlation_chart
+        assert build_correlation_chart(pd.DataFrame()) is None
+
+    def test_single_stock(self):
+        """1銘柄行列はNone."""
+        from components.charts import build_correlation_chart
+        corr = pd.DataFrame([[1.0]], index=["AAA"], columns=["AAA"])
+        assert build_correlation_chart(corr) is None

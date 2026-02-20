@@ -512,3 +512,128 @@ def build_rolling_sharpe_chart(
         showlegend=False,
     )
     return fig
+
+
+# =====================================================================
+# 構成比ツリーマップ
+# =====================================================================
+
+def build_treemap_chart(positions: list[dict]) -> go.Figure | None:
+    """保有銘柄のセクター×銘柄ツリーマップを構築して返す.
+
+    Parameters
+    ----------
+    positions : list[dict]
+        get_current_snapshot()["positions"]
+
+    Returns
+    -------
+    go.Figure | None
+        銘柄が無い場合は None
+    """
+    if not positions:
+        return None
+
+    labels = []
+    parents = []
+    values = []
+    colors = []
+
+    # セクターを集約
+    sector_map: dict[str, list[dict]] = {}
+    for p in positions:
+        sector = p.get("sector") or "不明"
+        sector_map.setdefault(sector, []).append(p)
+
+    for sector, stocks in sector_map.items():
+        # セクターノード（親はルート ""）
+        labels.append(sector)
+        parents.append("")
+        sector_value = sum(s["evaluation_jpy"] for s in stocks)
+        values.append(sector_value)
+        colors.append(0)  # セクターノード自体の色は中立
+
+        for s in stocks:
+            label = s.get("name", s["symbol"])
+            # 長すぎる名前は短縮
+            if len(label) > 15:
+                label = label[:13] + "…"
+            labels.append(label)
+            parents.append(sector)
+            values.append(max(s["evaluation_jpy"], 0))
+            colors.append(s.get("pnl_pct", 0))
+
+    fig = go.Figure(go.Treemap(
+        labels=labels,
+        parents=parents,
+        values=values,
+        marker=dict(
+            colors=colors,
+            colorscale="RdYlGn",
+            cmid=0,
+            showscale=True,
+            colorbar=dict(title="損益率%", ticksuffix="%"),
+        ),
+        texttemplate="<b>%{label}</b><br>¥%{value:,.0f}",
+        hovertemplate=(
+            "<b>%{label}</b><br>"
+            "評価額: ¥%{value:,.0f}<br>"
+            "損益率: %{color:+.1f}%<extra></extra>"
+        ),
+        branchvalues="total",
+    ))
+    fig.update_layout(
+        title="構成比ツリーマップ（セクター × 銘柄）",
+        height=450,
+        margin=dict(t=40, l=5, r=5, b=5),
+    )
+    return fig
+
+
+# =====================================================================
+# 銘柄間相関ヒートマップ
+# =====================================================================
+
+def build_correlation_chart(corr_matrix: pd.DataFrame) -> go.Figure | None:
+    """銘柄間の日次リターン相関ヒートマップを構築して返す.
+
+    Parameters
+    ----------
+    corr_matrix : pd.DataFrame
+        compute_correlation_matrix() の出力
+
+    Returns
+    -------
+    go.Figure | None
+        銘柄が2つ未満の場合は None
+    """
+    if corr_matrix.empty or len(corr_matrix) < 2:
+        return None
+
+    # 小数点2桁の注釈テキスト
+    text_vals = [[f"{v:.2f}" for v in row] for row in corr_matrix.values]
+
+    fig = go.Figure(go.Heatmap(
+        z=corr_matrix.values,
+        x=corr_matrix.columns.tolist(),
+        y=corr_matrix.index.tolist(),
+        text=text_vals,
+        texttemplate="%{text}",
+        colorscale="RdBu_r",
+        zmid=0,
+        zmin=-1,
+        zmax=1,
+        colorbar=dict(title="相関"),
+        hovertemplate=(
+            "%{x} × %{y}<br>"
+            "相関: %{z:.3f}<extra></extra>"
+        ),
+    ))
+    fig.update_layout(
+        title="銘柄間 日次リターン相関",
+        height=max(350, len(corr_matrix) * 40 + 100),
+        xaxis=dict(side="bottom"),
+        yaxis=dict(autorange="reversed"),
+        margin=dict(t=40, l=10, r=10, b=10),
+    )
+    return fig

@@ -35,6 +35,7 @@ from components.data_loader import (
     compute_top_worst_performers,
     compute_drawdown_series,
     compute_rolling_sharpe,
+    compute_correlation_matrix,
     get_benchmark_series,
 )
 from components.charts import (
@@ -48,6 +49,8 @@ from components.charts import (
     build_trade_flow_chart,
     build_drawdown_chart,
     build_rolling_sharpe_chart,
+    build_treemap_chart,
+    build_correlation_chart,
 )
 
 # =====================================================================
@@ -723,6 +726,23 @@ with col_right:
     fig_cur = build_currency_chart(positions)
     if fig_cur is not None:
         st.plotly_chart(fig_cur, key="chart_currency")
+
+# --- 構成比ツリーマップ（フルワイド表示） ---
+st.markdown("### 🌳 構成比ツリーマップ")
+fig_treemap = build_treemap_chart(positions)
+if fig_treemap is not None:
+    st.plotly_chart(fig_treemap, use_container_width=True, key="chart_treemap")
+else:
+    st.info("ツリーマップの表示に必要なデータがありません")
+
+# --- 銘柄間相関ヒートマップ ---
+if not history_df.empty:
+    corr_matrix = compute_correlation_matrix(history_df)
+    if not corr_matrix.empty:
+        st.markdown("### 🔗 銘柄間 日次リターン相関")
+        fig_corr = build_correlation_chart(corr_matrix)
+        if fig_corr is not None:
+            st.plotly_chart(fig_corr, use_container_width=True, key="chart_correlation")
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 

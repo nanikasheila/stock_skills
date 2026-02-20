@@ -1092,3 +1092,45 @@ def compute_rolling_sharpe(
         (rolling_mean - daily_rf) / rolling_std * np.sqrt(trading_days)
     )
     return rolling_sharpe.dropna()
+
+
+# ---------------------------------------------------------------------------
+# 14. 銘柄間相関行列
+# ---------------------------------------------------------------------------
+
+def compute_correlation_matrix(
+    history_df: pd.DataFrame,
+    min_periods: int = 20,
+) -> pd.DataFrame:
+    """保有銘柄間の日次リターン相関行列を返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。銘柄ごとの列を含む。
+    min_periods : int
+        相関計算に必要な最低データ点数。
+
+    Returns
+    -------
+    pd.DataFrame
+        銘柄×銘柄の相関行列。銘柄が2つ未満の場合は空DataFrame。
+    """
+    if history_df.empty:
+        return pd.DataFrame()
+
+    # "total" と "invested" を除いた銘柄列のみ
+    stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
+    if len(stock_cols) < 2:
+        return pd.DataFrame()
+
+    stock_df = history_df[stock_cols].dropna(how="all")
+    if len(stock_df) < min_periods:
+        return pd.DataFrame()
+
+    # 日次リターンを計算
+    daily_returns = stock_df.pct_change().dropna(how="all")
+
+    # 相関行列
+    corr = daily_returns.corr(min_periods=min_periods)
+    return corr
