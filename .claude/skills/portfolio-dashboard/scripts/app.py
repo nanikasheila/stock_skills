@@ -15,8 +15,6 @@ import time
 from pathlib import Path
 
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 
@@ -30,6 +28,19 @@ from components.data_loader import (
     get_sector_breakdown,
     get_monthly_summary,
     get_trade_activity,
+    build_projection,
+    compute_risk_metrics,
+    get_benchmark_series,
+)
+from components.charts import (
+    build_total_chart,
+    build_invested_chart,
+    build_projection_chart,
+    build_sector_chart,
+    build_currency_chart,
+    build_individual_chart,
+    build_monthly_chart,
+    build_trade_flow_chart,
 )
 
 # =====================================================================
@@ -100,12 +111,53 @@ show_invested = st.sidebar.checkbox(
     value=True,
 )
 
+# ベンチマーク選択
+_BENCHMARK_OPTIONS = {
+    "なし": None,
+    "S&P 500 (SPY)": "SPY",
+    "VTI (米国全体)": "VTI",
+    "日経225 (^N225)": "^N225",
+    "TOPIX (^TPX)": "1306.T",
+}
+benchmark_label = st.sidebar.selectbox(
+    "📏 ベンチマーク比較",
+    options=list(_BENCHMARK_OPTIONS.keys()),
+    index=0,
+    help="総資産推移にベンチマークのパフォーマンスを重ねて表示",
+)
+benchmark_symbol = _BENCHMARK_OPTIONS[benchmark_label]
+
 show_individual = st.sidebar.checkbox(
     "銘柄別の個別チャートを表示",
     value=False,
 )
 
 st.sidebar.markdown("---")
+
+# --- 目標・推定セクション ---
+st.sidebar.markdown("### 🎯 目標・将来推定")
+
+show_projection = st.sidebar.checkbox(
+    "目標ライン & 将来推定を表示",
+    value=True,
+)
+
+target_amount = st.sidebar.number_input(
+    "🎯 目標資産額（万円）",
+    min_value=0,
+    max_value=100000,
+    value=5000,
+    step=500,
+    help="総資産推移グラフに水平ラインとして表示",
+) * 10000  # 万円→円
+
+projection_years = st.sidebar.slider(
+    "📅 推定期間（年）",
+    min_value=1,
+    max_value=20,
+    value=5,
+    help="現在の保有銘柄のリターン推定に基づく将来推移",
+)
 
 # --- データ更新セクション ---
 st.sidebar.markdown("### 🔄 データ更新")
@@ -194,9 +246,23 @@ st.sidebar.caption(
 st.title("💼 ポートフォリオダッシュボード")
 
 # --- データ読み込み ---
-with st.spinner("ポートフォリオデータを読み込み中..."):
-    snapshot = load_snapshot()
-    history_df = load_history(period)
+try:
+    with st.spinner("ポートフォリオデータを読み込み中..."):
+        snapshot = load_snapshot()
+        history_df = load_history(period)
+except Exception as _data_err:
+    st.error(f"⚠️ データ取得に失敗しました: {_data_err}")
+    st.info("ネットワーク接続を確認するか、「🔄 今すぐ更新」ボタンで再試行してください。")
+    st.stop()
+
+# FXレート表示（サイドバー）
+_fx = snapshot.get("fx_rates", {})
+_fx_display = {k: v for k, v in _fx.items() if k != "JPY" and v != 1.0}
+if _fx_display:
+    st.sidebar.markdown("### 💱 為替レート")
+    for cur, rate in sorted(_fx_display.items()):
+        st.sidebar.caption(f"{cur}/JPY: ¥{rate:,.2f}")
+    st.sidebar.markdown("---")
 
 # =====================================================================
 # KPI メトリクスカード
@@ -212,28 +278,40 @@ realized_pnl = snapshot.get("realized_pnl", {}).get("total_jpy", 0)
 total_pnl = unrealized_pnl + realized_pnl
 num_holdings = len([p for p in positions if p.get("sector") != "Cash"])
 
-# --- メイン KPI (大きく表示) ---
+# --- KPIカード共通ヘルパー ---
+def _kpi_card(label: str, value: str, sub: str = "", color: str = "#e2e8f0",
+              bg: str = "linear-gradient(135deg, #1e293b 0%, #334155 100%)") -> str:
+    sub_html = f'<span style="font-size:0.8rem; color:{color};">{sub}</span>' if sub else ""
+    return (
+        f'<div style="background:{bg}; border-radius:12px; padding:16px 20px; text-align:center;">'
+        f'<span style="font-size:0.8rem; opacity:0.7; color:#94a3b8;">{label}</span><br>'
+        f'<span style="font-size:1.6rem; font-weight:700; color:{color};">{value}</span><br>'
+        f'{sub_html}'
+        f'</div>'
+    )
+
+_unr_color = "#4ade80" if unrealized_pnl >= 0 else "#f87171"
+_unr_sign = "+" if unrealized_pnl >= 0 else ""
+
 col1, col2, col3 = st.columns(3)
-
 with col1:
-    st.metric(
-        label="トータル資産（円換算）",
-        value=f"¥{total_value:,.0f}",
-    )
+    st.markdown(_kpi_card("トータル資産（円換算）", f"¥{total_value:,.0f}"), unsafe_allow_html=True)
 with col2:
-    st.metric(
-        label="評価損益（含み）",
-        value=f"¥{unrealized_pnl:,.0f}",
-        delta=f"{unrealized_pnl_pct:+.2f}%",
-    )
+    st.markdown(_kpi_card(
+        "評価損益（含み）",
+        f"{_unr_sign}¥{unrealized_pnl:,.0f}",
+        sub=f"{unrealized_pnl_pct:+.2f}%",
+        color=_unr_color,
+    ), unsafe_allow_html=True)
 with col3:
-    st.metric(
-        label="保有銘柄数",
-        value=f"{num_holdings}",
-        delta=f"更新: {snapshot['as_of'][:10]}",
-    )
+    st.markdown(_kpi_card(
+        "保有銘柄数",
+        f"{num_holdings}",
+        sub=f"更新: {snapshot['as_of'][:10]}",
+        color="#60a5fa",
+    ), unsafe_allow_html=True)
 
-# --- サブ KPI (小さく表示) ---
+# --- サブ KPI ---
 realized_sign = "+" if realized_pnl >= 0 else ""
 total_pnl_sign = "+" if total_pnl >= 0 else ""
 realized_color = "#4ade80" if realized_pnl >= 0 else "#f87171"
@@ -241,23 +319,56 @@ total_pnl_color = "#4ade80" if total_pnl >= 0 else "#f87171"
 
 sub_col1, sub_col2 = st.columns(2)
 with sub_col1:
-    st.markdown(
-        f'<div style="padding: 4px 0;">'
-        f'<span style="font-size: 0.85rem; opacity: 0.7;">トータル損益（実現＋含み）</span><br>'
-        f'<span style="font-size: 1.2rem; font-weight: 600; color: {total_pnl_color};">'
-        f'{total_pnl_sign}¥{total_pnl:,.0f}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(_kpi_card(
+        "トータル損益（実現＋含み）",
+        f"{total_pnl_sign}¥{total_pnl:,.0f}",
+        color=total_pnl_color,
+        bg="linear-gradient(135deg, #1a2332 0%, #2d3748 100%)",
+    ), unsafe_allow_html=True)
 with sub_col2:
-    st.markdown(
-        f'<div style="padding: 4px 0;">'
-        f'<span style="font-size: 0.85rem; opacity: 0.7;">実現損益（確定済）</span><br>'
-        f'<span style="font-size: 1.2rem; font-weight: 600; color: {realized_color};">'
-        f'{realized_sign}¥{realized_pnl:,.0f}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
+    st.markdown(_kpi_card(
+        "実現損益（確定済）",
+        f"{realized_sign}¥{realized_pnl:,.0f}",
+        color=realized_color,
+        bg="linear-gradient(135deg, #1a2332 0%, #2d3748 100%)",
+    ), unsafe_allow_html=True)
+
+# --- リスク指標 ---
+if not history_df.empty:
+    risk = compute_risk_metrics(history_df)
+    rcol1, rcol2, rcol3, rcol4, rcol5 = st.columns(5)
+
+    _sharpe_color = "#4ade80" if risk["sharpe_ratio"] >= 1.0 else (
+        "#fbbf24" if risk["sharpe_ratio"] >= 0.5 else "#f87171"
     )
+    _mdd_color = "#4ade80" if risk["max_drawdown_pct"] > -10 else (
+        "#fbbf24" if risk["max_drawdown_pct"] > -20 else "#f87171"
+    )
+
+    def _risk_card(label: str, value: str, color: str = "#e2e8f0") -> str:
+        return (
+            f'<div style="text-align:center; padding:4px 0;">'
+            f'<span style="font-size:0.75rem; opacity:0.7;">{label}</span><br>'
+            f'<span style="font-size:1.1rem; font-weight:600; color:{color};">{value}</span>'
+            f'</div>'
+        )
+
+    with rcol1:
+        st.markdown(_risk_card("年率リターン", f"{risk['annual_return_pct']:+.1f}%",
+                               "#4ade80" if risk["annual_return_pct"] > 0 else "#f87171"),
+                    unsafe_allow_html=True)
+    with rcol2:
+        st.markdown(_risk_card("年率ボラティリティ", f"{risk['annual_volatility_pct']:.1f}%"),
+                    unsafe_allow_html=True)
+    with rcol3:
+        st.markdown(_risk_card("シャープレシオ", f"{risk['sharpe_ratio']:.2f}", _sharpe_color),
+                    unsafe_allow_html=True)
+    with rcol4:
+        st.markdown(_risk_card("最大ドローダウン", f"{risk['max_drawdown_pct']:.1f}%", _mdd_color),
+                    unsafe_allow_html=True)
+    with rcol5:
+        st.markdown(_risk_card("カルマーレシオ", f"{risk['calmar_ratio']:.2f}"),
+                    unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -267,81 +378,12 @@ st.markdown("---")
 st.markdown("### 📊 総資産推移")
 
 if not history_df.empty:
-    # 銘柄列（total / invested 以外）を取得
-    stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
+    # ベンチマーク系列の取得
+    bench_series = None
+    if benchmark_symbol:
+        bench_series = get_benchmark_series(benchmark_symbol, history_df, period)
 
-    if chart_style == "積み上げ面":
-        fig_total = go.Figure()
-        for col in stock_cols:
-            fig_total.add_trace(go.Scatter(
-                x=history_df.index,
-                y=history_df[col],
-                mode="lines",
-                stackgroup="one",
-                name=col,
-                hovertemplate="%{x}<br>%{fullData.name}: ¥%{y:,.0f}<extra></extra>",
-            ))
-        fig_total.update_layout(
-            title="保有銘柄別 評価額推移（積み上げ面グラフ）",
-            xaxis_title="日付",
-            yaxis_title="評価額（円）",
-            hovermode="x unified",
-            height=500,
-            yaxis=dict(tickformat=","),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-        )
-
-    elif chart_style == "折れ線":
-        fig_total = go.Figure()
-        # 合計の太線
-        fig_total.add_trace(go.Scatter(
-            x=history_df.index,
-            y=history_df["total"],
-            mode="lines",
-            name="合計",
-            line=dict(width=3, color="#fbbf24"),
-            hovertemplate="合計: ¥%{y:,.0f}<extra></extra>",
-        ))
-        for col in stock_cols:
-            fig_total.add_trace(go.Scatter(
-                x=history_df.index,
-                y=history_df[col],
-                mode="lines",
-                name=col,
-                hovertemplate="%{fullData.name}: ¥%{y:,.0f}<extra></extra>",
-            ))
-        fig_total.update_layout(
-            title="保有銘柄別 評価額推移（折れ線グラフ）",
-            xaxis_title="日付",
-            yaxis_title="評価額（円）",
-            hovermode="x unified",
-            height=500,
-            yaxis=dict(tickformat=","),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-        )
-
-    else:  # 積み上げ棒
-        # 日次だと棒が多すぎるので週次にリサンプル
-        weekly = history_df[stock_cols].resample("W").last().ffill()
-        fig_total = go.Figure()
-        for col in stock_cols:
-            fig_total.add_trace(go.Bar(
-                x=weekly.index,
-                y=weekly[col],
-                name=col,
-                hovertemplate="%{fullData.name}: ¥%{y:,.0f}<extra></extra>",
-            ))
-        fig_total.update_layout(
-            barmode="stack",
-            title="保有銘柄別 評価額推移（積み上げ棒グラフ・週次）",
-            xaxis_title="日付",
-            yaxis_title="評価額（円）",
-            hovermode="x unified",
-            height=500,
-            yaxis=dict(tickformat=","),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-        )
-
+    fig_total = build_total_chart(history_df, chart_style, bench_series, benchmark_label)
     st.plotly_chart(fig_total, key="chart_total")
 
     # ---------------------------------------------------------------
@@ -349,35 +391,63 @@ if not history_df.empty:
     # ---------------------------------------------------------------
     if show_invested and "invested" in history_df.columns:
         st.markdown("### 💰 投資額 vs 評価額")
-
-        fig_inv = go.Figure()
-        fig_inv.add_trace(go.Scatter(
-            x=history_df.index,
-            y=history_df["total"],
-            mode="lines",
-            name="評価額",
-            line=dict(width=2, color="#60a5fa"),
-            fill="tozeroy",
-            fillcolor="rgba(96,165,250,0.15)",
-            hovertemplate="評価額: ¥%{y:,.0f}<extra></extra>",
-        ))
-        fig_inv.add_trace(go.Scatter(
-            x=history_df.index,
-            y=history_df["invested"],
-            mode="lines",
-            name="累積投資額",
-            line=dict(width=2, color="#f59e0b", dash="dot"),
-            hovertemplate="投資額: ¥%{y:,.0f}<extra></extra>",
-        ))
-        fig_inv.update_layout(
-            xaxis_title="日付",
-            yaxis_title="金額（円）",
-            hovermode="x unified",
-            height=400,
-            yaxis=dict(tickformat=","),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.25),
-        )
+        fig_inv = build_invested_chart(history_df)
         st.plotly_chart(fig_inv, key="chart_invested")
+
+    # ---------------------------------------------------------------
+    # 目標ライン & 将来推定推移
+    # ---------------------------------------------------------------
+    if show_projection:
+        st.markdown("### 🔮 総資産推移 & 将来推定")
+
+        projection_df = build_projection(
+            current_value=total_value,
+            years=projection_years,
+        )
+
+        fig_proj = build_projection_chart(history_df, projection_df, target_amount)
+        st.plotly_chart(fig_proj, key="chart_projection")
+
+        # 推定リターンのサマリー
+        opt_val = projection_df["optimistic"].iloc[-1]
+        base_val = projection_df["base"].iloc[-1]
+        pess_val = projection_df["pessimistic"].iloc[-1]
+        opt_rate = (opt_val / total_value - 1) * 100
+        base_rate_pct = (base_val / total_value - 1) * 100
+        pess_rate = (pess_val / total_value - 1) * 100
+
+        scol1, scol2, scol3 = st.columns(3)
+        with scol1:
+            st.markdown(
+                f'<div style="text-align:center; padding:8px;">'
+                f'<span style="font-size:0.85rem; opacity:0.7;">🟢 楽観（{projection_years}年後）</span><br>'
+                f'<span style="font-size:1.3rem; font-weight:600; color:#4ade80;">'
+                f'¥{opt_val:,.0f}</span><br>'
+                f'<span style="font-size:0.8rem; color:#4ade80;">{opt_rate:+.1f}%</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with scol2:
+            st.markdown(
+                f'<div style="text-align:center; padding:8px;">'
+                f'<span style="font-size:0.85rem; opacity:0.7;">🟣 ベース（{projection_years}年後）</span><br>'
+                f'<span style="font-size:1.3rem; font-weight:600; color:#a78bfa;">'
+                f'¥{base_val:,.0f}</span><br>'
+                f'<span style="font-size:0.8rem; color:#a78bfa;">{base_rate_pct:+.1f}%</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with scol3:
+            st.markdown(
+                f'<div style="text-align:center; padding:8px;">'
+                f'<span style="font-size:0.85rem; opacity:0.7;">🔴 悲観（{projection_years}年後）</span><br>'
+                f'<span style="font-size:1.3rem; font-weight:600; color:#f87171;">'
+                f'¥{pess_val:,.0f}</span><br>'
+                f'<span style="font-size:0.8rem; color:#f87171;">{pess_rate:+.1f}%</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
 else:
     st.warning("株価履歴データが取得できませんでした。")
 
@@ -397,8 +467,10 @@ with col_left:
             "保有数": p["shares"],
             "現在価格": f"{p['current_price']:,.2f} {p.get('currency', '')}",
             "評価額(円)": p["evaluation_jpy"],
+            "構成比": p["evaluation_jpy"] / total_value * 100 if total_value else 0,
             "損益(円)": p.get("pnl_jpy", 0),
-            "損益率": f"{p.get('pnl_pct', 0):+.1f}%",
+            "損益率(%)": p.get("pnl_pct", 0),
+            "通貨": p.get("currency", ""),
             "セクター": p.get("sector", ""),
         }
         for p in positions
@@ -411,14 +483,30 @@ with col_left:
         st.dataframe(
             holdings_df.style.format({
                 "評価額(円)": "¥{:,.0f}",
+                "構成比": "{:.1f}%",
                 "損益(円)": "¥{:,.0f}",
-            }).map(
-                lambda v: "color: #4ade80" if isinstance(v, str) and v.startswith("+")
-                else ("color: #f87171" if isinstance(v, str) and v.startswith("-") else ""),
-                subset=["損益率"]
+                "損益率(%)": "{:+.1f}%",
+            }).background_gradient(
+                subset=["損益率(%)"],
+                cmap="RdYlGn",
+                vmin=-30,
+                vmax=30,
+            ).map(
+                lambda v: "color: #4ade80" if isinstance(v, (int, float)) and v > 0
+                else ("color: #f87171" if isinstance(v, (int, float)) and v < 0 else ""),
+                subset=["損益(円)"],
             ),
             width="stretch",
             height=400,
+        )
+
+        # CSVダウンロード
+        csv_data = holdings_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "📥 保有一覧をCSVダウンロード",
+            data=csv_data,
+            file_name=f"holdings_{time.strftime('%Y%m%d')}.csv",
+            mime="text/csv",
         )
 
 with col_right:
@@ -426,25 +514,16 @@ with col_right:
 
     sector_df = get_sector_breakdown(snapshot)
     if not sector_df.empty:
-        fig_sector = px.pie(
-            sector_df,
-            values="evaluation_jpy",
-            names="sector",
-            hole=0.4,
-            color_discrete_sequence=px.colors.qualitative.Set3,
-        )
-        fig_sector.update_traces(
-            textposition="inside",
-            textinfo="percent+label",
-            hovertemplate="%{label}<br>¥%{value:,.0f}<br>%{percent}<extra></extra>",
-        )
-        fig_sector.update_layout(
-            height=400,
-            showlegend=False,
-        )
+        fig_sector = build_sector_chart(sector_df)
         st.plotly_chart(fig_sector, key="chart_sector")
     else:
         st.info("セクターデータなし")
+
+    # 通貨別エクスポージャー
+    st.markdown("### 💱 通貨別配分")
+    fig_cur = build_currency_chart(positions)
+    if fig_cur is not None:
+        st.plotly_chart(fig_cur, key="chart_currency")
 
 st.markdown("---")
 
@@ -464,23 +543,7 @@ if show_individual and not history_df.empty:
                 break
             symbol = stock_cols[idx]
             with col_widget:
-                fig_ind = go.Figure()
-                fig_ind.add_trace(go.Scatter(
-                    x=history_df.index,
-                    y=history_df[symbol],
-                    mode="lines",
-                    fill="tozeroy",
-                    name=symbol,
-                    line=dict(width=2),
-                    hovertemplate="¥%{y:,.0f}<extra></extra>",
-                ))
-                fig_ind.update_layout(
-                    title=symbol,
-                    height=250,
-                    margin=dict(l=40, r=20, t=40, b=30),
-                    yaxis=dict(tickformat=","),
-                    showlegend=False,
-                )
+                fig_ind = build_individual_chart(history_df, symbol)
                 st.plotly_chart(fig_ind, key=f"chart_ind_{symbol}")
 
     st.markdown("---")
@@ -496,34 +559,7 @@ if not history_df.empty:
         col_chart, col_table = st.columns([2, 1])
 
         with col_chart:
-            fig_monthly = go.Figure()
-            fig_monthly.add_trace(go.Bar(
-                x=monthly_df.index,
-                y=monthly_df["month_end_value_jpy"],
-                name="月末評価額",
-                marker_color=[
-                    "#4ade80" if v >= 0 else "#f87171"
-                    for v in monthly_df["change_pct"].fillna(0)
-                ],
-                hovertemplate="月末資産: ¥%{y:,.0f}<extra></extra>",
-            ))
-            if "invested_jpy" in monthly_df.columns:
-                fig_monthly.add_trace(go.Scatter(
-                    x=monthly_df.index,
-                    y=monthly_df["invested_jpy"],
-                    name="累積投資額",
-                    mode="lines",
-                    line=dict(width=2, color="#f59e0b", dash="dot"),
-                    hovertemplate="投資額: ¥%{y:,.0f}<extra></extra>",
-                ))
-            fig_monthly.update_layout(
-                title="月末資産額の推移",
-                xaxis_title="月",
-                yaxis_title="評価額（円）",
-                height=350,
-                yaxis=dict(tickformat=","),
-                legend=dict(orientation="h", yanchor="bottom", y=-0.35),
-            )
+            fig_monthly = build_monthly_chart(monthly_df)
             st.plotly_chart(fig_monthly, key="chart_monthly")
 
         with col_table:
@@ -534,6 +570,10 @@ if not history_df.empty:
                 display_cols.insert(1, "invested_jpy")
                 col_names["invested_jpy"] = "投資額(円)"
                 fmt["投資額(円)"] = "¥{:,.0f}"
+            if "yoy_pct" in monthly_df.columns:
+                display_cols.append("yoy_pct")
+                col_names["yoy_pct"] = "前年同月比(%)"
+                fmt["前年同月比(%)"] = "{:+.1f}%"
             if "unrealized_pnl" in monthly_df.columns:
                 display_cols.append("unrealized_pnl")
                 col_names["unrealized_pnl"] = "含み損益(円)"
@@ -542,6 +582,14 @@ if not history_df.empty:
             st.dataframe(
                 display_monthly.style.format(fmt),
                 width="stretch",
+            )
+            # 月次CSVダウンロード
+            monthly_csv = display_monthly.to_csv().encode("utf-8-sig")
+            st.download_button(
+                "📥 月次サマリーをCSVダウンロード",
+                data=monthly_csv,
+                file_name=f"monthly_summary_{time.strftime('%Y%m%d')}.csv",
+                mime="text/csv",
             )
     else:
         st.info("月次データなし（データ期間が短い可能性があります）")
@@ -559,38 +607,7 @@ if not trade_act_df.empty:
     col_flow, col_tbl = st.columns([2, 1])
 
     with col_flow:
-        fig_flow = go.Figure()
-        fig_flow.add_trace(go.Bar(
-            x=trade_act_df.index,
-            y=trade_act_df["buy_amount"],
-            name="購入額",
-            marker_color="#60a5fa",
-            hovertemplate="購入: ¥%{y:,.0f}<extra></extra>",
-        ))
-        fig_flow.add_trace(go.Bar(
-            x=trade_act_df.index,
-            y=-trade_act_df["sell_amount"],
-            name="売却額",
-            marker_color="#f87171",
-            hovertemplate="売却: ¥%{y:,.0f}<extra></extra>",
-        ))
-        fig_flow.add_trace(go.Scatter(
-            x=trade_act_df.index,
-            y=trade_act_df["net_flow"],
-            name="ネットフロー",
-            mode="lines+markers",
-            line=dict(color="#fbbf24", width=2),
-            hovertemplate="ネット: ¥%{y:,.0f}<extra></extra>",
-        ))
-        fig_flow.update_layout(
-            title="月次売買フロー",
-            xaxis_title="月",
-            yaxis_title="金額（円）",
-            barmode="relative",
-            height=350,
-            yaxis=dict(tickformat=","),
-            legend=dict(orientation="h", yanchor="bottom", y=-0.35),
-        )
+        fig_flow = build_trade_flow_chart(trade_act_df)
         st.plotly_chart(fig_flow, key="chart_trade_flow")
 
     with col_tbl:

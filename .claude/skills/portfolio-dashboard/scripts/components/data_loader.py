@@ -650,6 +650,9 @@ def get_monthly_summary(history_df: pd.DataFrame) -> pd.DataFrame:
     # 月次変動率
     monthly["change_pct"] = monthly["month_end_value_jpy"].pct_change() * 100
 
+    # 前年同月比 (YoY)
+    monthly["yoy_pct"] = monthly["month_end_value_jpy"].pct_change(periods=12) * 100
+
     # 含み損益
     if "invested_jpy" in monthly.columns:
         monthly["unrealized_pnl"] = (
@@ -668,3 +671,216 @@ def get_trade_activity(
         return pd.DataFrame()
     fx_rates = get_fx_rates(yahoo_client)
     return _build_trade_activity(trades, fx_rates)
+
+
+# ---------------------------------------------------------------------------
+# 6. 資産推定推移（楽観/ベース/悲観）
+# ---------------------------------------------------------------------------
+
+def build_projection(
+    current_value: float,
+    years: int = 5,
+    optimistic_rate: float | None = None,
+    base_rate: float | None = None,
+    pessimistic_rate: float | None = None,
+    csv_path: str = DEFAULT_CSV_PATH,
+) -> pd.DataFrame:
+    """現在の総資産から楽観/ベース/悲観の将来推定推移を生成する.
+
+    Parameters
+    ----------
+    current_value : float
+        現在の総資産（円）。
+    years : int
+        何年先まで推定するか（デフォルト5年）。
+    optimistic_rate, base_rate, pessimistic_rate : float | None
+        年率リターン（0.10 = 10%）。None の場合は estimate_portfolio_return から取得。
+    csv_path : str
+        ポートフォリオCSVパス。
+
+    Returns
+    -------
+    pd.DataFrame
+        index=日付, columns=[optimistic, base, pessimistic]
+    """
+    # リターン推定値が未指定の場合、ポートフォリオから推定
+    if base_rate is None:
+        try:
+            from src.core.return_estimate import estimate_portfolio_return
+            result = estimate_portfolio_return(csv_path, yahoo_client)
+            pf = result.get("portfolio", {})
+            optimistic_rate = pf.get("optimistic") or 0.15
+            base_rate = pf.get("base") or 0.08
+            pessimistic_rate = pf.get("pessimistic") or -0.05
+        except Exception:
+            optimistic_rate = 0.15
+            base_rate = 0.08
+            pessimistic_rate = -0.05
+
+    if optimistic_rate is None:
+        optimistic_rate = 0.15
+    if pessimistic_rate is None:
+        pessimistic_rate = -0.05
+
+    # 月次ポイントで推定（years * 12 + 1 点）
+    today = pd.Timestamp.now().normalize()
+    months = years * 12
+    dates = pd.date_range(start=today, periods=months + 1, freq="ME")
+    # 先頭を今日にする
+    dates = dates.insert(0, today)
+
+    rows = []
+    for d in dates:
+        t_years = (d - today).days / 365.25
+        rows.append({
+            "date": d,
+            "optimistic": current_value * (1 + optimistic_rate) ** t_years,
+            "base": current_value * (1 + base_rate) ** t_years,
+            "pessimistic": current_value * (1 + pessimistic_rate) ** t_years,
+        })
+
+    df = pd.DataFrame(rows).set_index("date")
+    return df
+
+
+# ---------------------------------------------------------------------------
+# 7. リスク指標の算出
+# ---------------------------------------------------------------------------
+
+import numpy as np
+
+
+def compute_risk_metrics(history_df: pd.DataFrame) -> dict:
+    """日次の資産推移からリスク指標を算出する.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力。"total" 列が必須。
+
+    Returns
+    -------
+    dict
+        sharpe_ratio: float   年率シャープレシオ（リスクフリーレート0.5%想定）
+        max_drawdown_pct: float  最大ドローダウン（%、マイナス値）
+        annual_volatility_pct: float  年率ボラティリティ（%）
+        annual_return_pct: float  年率リターン（%）
+        calmar_ratio: float  カルマーレシオ（年率リターン / |MDD|）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return {
+            "sharpe_ratio": 0.0,
+            "max_drawdown_pct": 0.0,
+            "annual_volatility_pct": 0.0,
+            "annual_return_pct": 0.0,
+            "calmar_ratio": 0.0,
+        }
+
+    total = history_df["total"].dropna()
+    if len(total) < 2:
+        return {
+            "sharpe_ratio": 0.0,
+            "max_drawdown_pct": 0.0,
+            "annual_volatility_pct": 0.0,
+            "annual_return_pct": 0.0,
+            "calmar_ratio": 0.0,
+        }
+
+    # 日次リターン
+    daily_returns = total.pct_change().dropna()
+    if daily_returns.empty:
+        return {
+            "sharpe_ratio": 0.0,
+            "max_drawdown_pct": 0.0,
+            "annual_volatility_pct": 0.0,
+            "annual_return_pct": 0.0,
+            "calmar_ratio": 0.0,
+        }
+
+    trading_days = 252
+    risk_free_rate = 0.005  # 0.5%
+
+    # 年率リターン
+    total_days = (total.index[-1] - total.index[0]).days
+    if total_days <= 0:
+        total_days = 1
+    total_return = total.iloc[-1] / total.iloc[0] - 1
+    annual_return = (1 + total_return) ** (365.25 / total_days) - 1
+
+    # 年率ボラティリティ
+    annual_vol = float(daily_returns.std() * np.sqrt(trading_days))
+
+    # シャープレシオ
+    sharpe = (annual_return - risk_free_rate) / annual_vol if annual_vol > 0 else 0.0
+
+    # 最大ドローダウン
+    cummax = total.cummax()
+    drawdown = (total - cummax) / cummax
+    max_dd = float(drawdown.min()) * 100  # パーセント
+
+    # カルマーレシオ
+    calmar = annual_return / abs(max_dd / 100) if max_dd != 0 else 0.0
+
+    return {
+        "sharpe_ratio": round(float(sharpe), 2),
+        "max_drawdown_pct": round(max_dd, 1),
+        "annual_volatility_pct": round(annual_vol * 100, 1),
+        "annual_return_pct": round(annual_return * 100, 1),
+        "calmar_ratio": round(float(calmar), 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. ベンチマークデータ取得
+# ---------------------------------------------------------------------------
+
+def get_benchmark_series(
+    symbol: str,
+    history_df: pd.DataFrame,
+    period: str = "3mo",
+) -> pd.Series | None:
+    """ベンチマーク銘柄の終値を取得し、PF の total 列と同じ基準に正規化する.
+
+    PF 開始日の total 値を基準に、ベンチマークの相対パフォーマンスを
+    同じ円スケールに変換して返す。
+
+    Parameters
+    ----------
+    symbol : str
+        ベンチマークのティッカー (e.g. "SPY", "^N225")
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力
+    period : str
+        価格取得期間
+
+    Returns
+    -------
+    pd.Series | None
+        index=Date, values=正規化された評価額（PFと同スケール）
+    """
+    if history_df.empty or "total" not in history_df.columns:
+        return None
+
+    prices = _load_prices([symbol], period)
+    if prices.empty or symbol not in prices.columns:
+        return None
+
+    bench = prices[symbol].dropna()
+    if bench.empty:
+        return None
+
+    # PF の日付範囲に合わせる
+    pf_start = history_df.index[0]
+    bench = bench[bench.index >= pf_start]
+    if bench.empty:
+        return None
+
+    # PF 開始日の total を基準に正規化
+    pf_start_value = history_df["total"].iloc[0]
+    bench_start_value = bench.iloc[0]
+    if bench_start_value == 0:
+        return None
+
+    normalized = bench / bench_start_value * pf_start_value
+    normalized.name = symbol
+    return normalized
