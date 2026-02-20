@@ -31,6 +31,7 @@ from components.data_loader import (
     get_sector_breakdown,
     compute_daily_change,
     compute_benchmark_excess,
+    compute_top_worst_performers,
 )
 
 
@@ -796,3 +797,58 @@ class TestComputeBenchmarkExcess:
         bench = pd.Series([100, 110], index=pd.date_range("2026-01-01", periods=2))
         result = compute_benchmark_excess(pd.DataFrame(), bench)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: compute_top_worst_performers
+# ---------------------------------------------------------------------------
+
+class TestTopWorstPerformers:
+    """Top/Worst パフォーマー算出テスト."""
+
+    def test_normal_ranking(self):
+        """正常なランキング算出."""
+        dates = pd.date_range("2026-02-17", periods=3, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110, 115],
+            "BBB": [200, 210, 200],
+            "CCC": [300, 300, 330],
+            "total": [600, 620, 645],
+        }, index=dates)
+        result = compute_top_worst_performers(df, top_n=2)
+        assert len(result["top"]) == 2
+        assert len(result["worst"]) == 2
+        # CCC が最もパフォーマンスが高い (300->330 = +10%)
+        assert result["top"][0]["symbol"] == "CCC"
+        # BBB が最もパフォーマンスが低い (210->200 = -4.76%)
+        assert result["worst"][0]["symbol"] == "BBB"
+
+    def test_empty_df(self):
+        """空DataFrame."""
+        result = compute_top_worst_performers(pd.DataFrame())
+        assert result["top"] == []
+        assert result["worst"] == []
+
+    def test_single_stock(self):
+        """1銘柄のみ."""
+        dates = pd.date_range("2026-02-17", periods=2, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110],
+            "total": [100, 110],
+        }, index=dates)
+        result = compute_top_worst_performers(df, top_n=3)
+        assert len(result["top"]) == 1
+        assert len(result["worst"]) == 1
+        assert result["top"][0]["symbol"] == "AAA"
+
+    def test_top_n_exceeds_stocks(self):
+        """top_nが銘柄数を超える場合."""
+        dates = pd.date_range("2026-02-17", periods=2, freq="B")
+        df = pd.DataFrame({
+            "AAA": [100, 110],
+            "BBB": [200, 190],
+            "total": [300, 300],
+        }, index=dates)
+        result = compute_top_worst_performers(df, top_n=5)
+        assert len(result["top"]) == 2
+        assert len(result["worst"]) == 2

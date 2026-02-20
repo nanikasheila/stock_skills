@@ -32,6 +32,7 @@ from components.data_loader import (
     compute_risk_metrics,
     compute_daily_change,
     compute_benchmark_excess,
+    compute_top_worst_performers,
     get_benchmark_series,
 )
 from components.charts import (
@@ -505,6 +506,43 @@ if benchmark_symbol and not history_df.empty:
                 f"{_ex_sign}{_excess['excess_return_pct']:.1f}%",
                 _ex_color,
             ), unsafe_allow_html=True)
+
+# --- Top / Worst パフォーマー ---
+if not history_df.empty:
+    _performers = compute_top_worst_performers(history_df, top_n=3)
+    _top = _performers["top"]
+    _worst = _performers["worst"]
+    if _top or _worst:
+        st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
+            _top_html = '<div class="kpi-card kpi-sub" style="text-align:left;">'
+            _top_html += '<div class="kpi-label">🟢 本日 Best</div>'
+            for p in _top:
+                _c = "#4ade80" if p["change_pct"] >= 0 else "#f87171"
+                _top_html += (
+                    f'<div style="display:flex; justify-content:space-between;'
+                    f' padding:3px 0; font-size:0.9rem;">'
+                    f'<span>{p["symbol"]}</span>'
+                    f'<span style="color:{_c}; font-weight:600;">'
+                    f'{p["change_pct"]:+.2f}%</span></div>'
+                )
+            _top_html += '</div>'
+            st.markdown(_top_html, unsafe_allow_html=True)
+        with pcol2:
+            _worst_html = '<div class="kpi-card kpi-sub" style="text-align:left;">'
+            _worst_html += '<div class="kpi-label">🔴 本日 Worst</div>'
+            for p in _worst:
+                _c = "#4ade80" if p["change_pct"] >= 0 else "#f87171"
+                _worst_html += (
+                    f'<div style="display:flex; justify-content:space-between;'
+                    f' padding:3px 0; font-size:0.9rem;">'
+                    f'<span>{p["symbol"]}</span>'
+                    f'<span style="color:{_c}; font-weight:600;">'
+                    f'{p["change_pct"]:+.2f}%</span></div>'
+                )
+            _worst_html += '</div>'
+            st.markdown(_worst_html, unsafe_allow_html=True)
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 

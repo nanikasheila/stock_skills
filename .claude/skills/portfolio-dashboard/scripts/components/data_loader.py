@@ -831,7 +831,62 @@ def compute_risk_metrics(history_df: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 8. 前日比計算
+# 8. Top/Worst パフォーマー
+# ---------------------------------------------------------------------------
+
+def compute_top_worst_performers(
+    history_df: pd.DataFrame,
+    top_n: int = 3,
+) -> dict:
+    """直近1日の銘柄別騰落率ランキングを返す.
+
+    Parameters
+    ----------
+    history_df : pd.DataFrame
+        build_portfolio_history() の出力
+    top_n : int
+        上位/下位何銘柄を返すか
+
+    Returns
+    -------
+    dict
+        top: list[dict]  (symbol, change_pct, change_jpy)
+        worst: list[dict]
+    """
+    if history_df.empty or len(history_df) < 2:
+        return {"top": [], "worst": []}
+
+    stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
+    if not stock_cols:
+        return {"top": [], "worst": []}
+
+    latest = history_df.iloc[-1]
+    previous = history_df.iloc[-2]
+
+    performers = []
+    for col in stock_cols:
+        cur = float(latest.get(col, 0))
+        prev = float(previous.get(col, 0))
+        if prev > 0 and cur > 0:
+            pct = (cur / prev - 1) * 100
+            change_jpy = cur - prev
+            performers.append({
+                "symbol": col,
+                "change_pct": round(pct, 2),
+                "change_jpy": round(change_jpy, 0),
+            })
+
+    performers.sort(key=lambda x: x["change_pct"], reverse=True)
+
+    actual_n = min(top_n, len(performers))
+    return {
+        "top": performers[:actual_n],
+        "worst": performers[-actual_n:][::-1] if actual_n > 0 else [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. 前日比計算
 # ---------------------------------------------------------------------------
 
 def compute_daily_change(history_df: pd.DataFrame) -> dict:
