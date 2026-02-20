@@ -56,142 +56,85 @@ st.set_page_config(
 # カスタムCSS
 st.markdown("""
 <style>
-    .metric-card {
-        background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
-        border-radius: 12px;
-        padding: 20px;
-        color: white;
-    }
-    .metric-value {
-        font-size: 2rem;
-        font-weight: 700;
-    }
-    .metric-label {
-        font-size: 0.9rem;
-        opacity: 0.8;
-    }
+    /* Smooth scroll for TOC anchor navigation */
+    html { scroll-behavior: smooth; }
     .positive { color: #4ade80; }
     .negative { color: #f87171; }
+    /* TOC link styling */
+    .toc-link {
+        display: block;
+        text-decoration: none;
+        padding: 7px 12px;
+        border-radius: 6px;
+        color: inherit;
+        font-size: 0.88rem;
+        transition: background 0.2s;
+        margin-bottom: 2px;
+    }
+    .toc-link:hover {
+        background: rgba(99,102,241,0.18);
+        color: #a5b4fc;
+    }
+    /* KPI cards — theme-aware */
+    .kpi-card {
+        background: var(--secondary-background-color);
+        border-radius: 12px;
+        text-align: center;
+    }
+    .kpi-main {
+        padding: 28px 24px 22px;
+        border-bottom: 3px solid rgba(99,102,241,0.5);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .kpi-sub {
+        padding: 14px 16px;
+        border-radius: 10px;
+    }
+    .kpi-risk {
+        padding: 10px 6px;
+        border-radius: 8px;
+        min-width: 0;
+    }
+    .kpi-label {
+        font-size: 0.8rem;
+        font-weight: 500;
+        opacity: 0.65;
+        letter-spacing: 0.02em;
+        margin-bottom: 5px;
+    }
+    .kpi-main .kpi-label {
+        font-size: 0.88rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        margin-bottom: 8px;
+    }
+    .kpi-value {
+        font-size: 2.2rem;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+    .kpi-value-sub {
+        font-size: 1.25rem;
+        font-weight: 600;
+    }
+    .kpi-value-risk {
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin-top: 2px;
+    }
+    /* KPI row spacing */
+    .kpi-spacer { margin-top: 10px; }
+    /* Section divider */
+    .section-divider {
+        border: none;
+        border-top: 1px solid rgba(148,163,184,0.2);
+        margin: 28px 0 20px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # =====================================================================
-# サイドバー
-# =====================================================================
-st.sidebar.title("📊 Portfolio Dashboard")
-st.sidebar.markdown("---")
-
-_PERIOD_OPTIONS = [
-    ("1ヶ月", "1mo"),
-    ("3ヶ月", "3mo"),
-    ("6ヶ月", "6mo"),
-    ("1年", "1y"),
-    ("2年", "2y"),
-    ("3年", "3y"),
-    ("5年", "5y"),
-    ("全期間", "max"),
-]
-
-period_label = st.sidebar.selectbox(
-    "📅 表示期間",
-    options=[label for label, _ in _PERIOD_OPTIONS],
-    index=1,
-    help="株価履歴の取得期間",
-)
-period = dict(_PERIOD_OPTIONS)[period_label]
-
-chart_style = st.sidebar.radio(
-    "🎨 チャートスタイル",
-    options=["積み上げ面", "折れ線", "積み上げ棒"],
-    index=0,
-)
-
-show_invested = st.sidebar.checkbox(
-    "投資額 vs 評価額を表示",
-    value=True,
-)
-
-# ベンチマーク選択
-_BENCHMARK_OPTIONS = {
-    "なし": None,
-    "S&P 500 (SPY)": "SPY",
-    "VTI (米国全体)": "VTI",
-    "日経225 (^N225)": "^N225",
-    "TOPIX (^TPX)": "1306.T",
-}
-benchmark_label = st.sidebar.selectbox(
-    "📏 ベンチマーク比較",
-    options=list(_BENCHMARK_OPTIONS.keys()),
-    index=0,
-    help="総資産推移にベンチマークのパフォーマンスを重ねて表示",
-)
-benchmark_symbol = _BENCHMARK_OPTIONS[benchmark_label]
-
-show_individual = st.sidebar.checkbox(
-    "銘柄別の個別チャートを表示",
-    value=False,
-)
-
-st.sidebar.markdown("---")
-
-# --- 目標・推定セクション ---
-st.sidebar.markdown("### 🎯 目標・将来推定")
-
-show_projection = st.sidebar.checkbox(
-    "目標ライン & 将来推定を表示",
-    value=True,
-)
-
-target_amount = st.sidebar.number_input(
-    "🎯 目標資産額（万円）",
-    min_value=0,
-    max_value=100000,
-    value=5000,
-    step=500,
-    help="総資産推移グラフに水平ラインとして表示",
-) * 10000  # 万円→円
-
-projection_years = st.sidebar.slider(
-    "📅 推定期間（年）",
-    min_value=1,
-    max_value=20,
-    value=5,
-    help="現在の保有銘柄のリターン推定に基づく将来推移",
-)
-
-# --- データ更新セクション ---
-st.sidebar.markdown("### 🔄 データ更新")
-
-# 自動更新の間隔設定
-_REFRESH_OPTIONS = [
-    ("なし（手動のみ）", 0),
-    ("1分", 60),
-    ("5分", 300),
-    ("15分", 900),
-    ("30分", 1800),
-    ("1時間", 3600),
-]
-auto_refresh_label = st.sidebar.selectbox(
-    "⏱ 自動更新間隔",
-    options=[label for label, _ in _REFRESH_OPTIONS],
-    index=2,  # デフォルト: 5分
-    help="選択した間隔でダッシュボードを自動リロードします",
-)
-auto_refresh_sec = dict(_REFRESH_OPTIONS)[auto_refresh_label]
-
-# 自動更新タイマーを設置（interval > 0 の場合のみ）
-if auto_refresh_sec > 0:
-    _refresh_count = st_autorefresh(
-        interval=auto_refresh_sec * 1000,
-        limit=0,  # 無制限
-        key="auto_refresh",
-    )
-else:
-    _refresh_count = 0
-
-
-# =====================================================================
-# データ取得（キャッシュ付き）— ボタン/タイマーより先に定義
+# データ取得（キャッシュ付き）— サイドバーより先に定義
 # =====================================================================
 @st.cache_data(ttl=300, show_spinner="データを取得中...")
 def load_snapshot():
@@ -208,13 +151,145 @@ def load_trade_activity():
     return get_trade_activity()
 
 
-# 手動更新ボタン
+# =====================================================================
+# サイドバー（タブ: 目次 / 設定）
+# =====================================================================
+st.sidebar.title("📊 Portfolio Dashboard")
+
+_tab_toc, _tab_settings = st.sidebar.tabs(["📑 目次", "⚙️ 設定"])
+
+# --- 目次タブ ---
+with _tab_toc:
+    st.markdown(
+        '<div style="display:flex; flex-direction:column; gap:2px; padding:4px 0;">'
+        '<a class="toc-link" href="#summary">📈 サマリー</a>'
+        '<a class="toc-link" href="#total-chart">📊 総資産推移</a>'
+        '<a class="toc-link" href="#invested-chart">💰 投資額 vs 評価額</a>'
+        '<a class="toc-link" href="#projection">🔮 将来推定</a>'
+        '<a class="toc-link" href="#holdings">🏢 保有銘柄・構成</a>'
+        '<a class="toc-link" href="#individual-chart">📉 銘柄別チャート</a>'
+        '<a class="toc-link" href="#monthly">📅 月次サマリー</a>'
+        '<a class="toc-link" href="#trade-activity">🔄 売買アクティビティ</a>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+# --- 設定タブ ---
+with _tab_settings:
+    _PERIOD_OPTIONS = [
+        ("1ヶ月", "1mo"),
+        ("3ヶ月", "3mo"),
+        ("6ヶ月", "6mo"),
+        ("1年", "1y"),
+        ("2年", "2y"),
+        ("3年", "3y"),
+        ("5年", "5y"),
+        ("全期間", "max"),
+    ]
+
+    period_label = st.selectbox(
+        "📅 表示期間",
+        options=[label for label, _ in _PERIOD_OPTIONS],
+        index=1,
+        help="株価履歴の取得期間",
+    )
+    period = dict(_PERIOD_OPTIONS)[period_label]
+
+    chart_style = st.radio(
+        "🎨 チャートスタイル",
+        options=["積み上げ面", "折れ線", "積み上げ棒"],
+        index=0,
+    )
+
+    show_invested = st.checkbox(
+        "投資額 vs 評価額を表示",
+        value=True,
+    )
+
+    # ベンチマーク選択
+    _BENCHMARK_OPTIONS = {
+        "なし": None,
+        "S&P 500 (SPY)": "SPY",
+        "VTI (米国全体)": "VTI",
+        "日経225 (^N225)": "^N225",
+        "TOPIX (^TPX)": "1306.T",
+    }
+    benchmark_label = st.selectbox(
+        "📏 ベンチマーク比較",
+        options=list(_BENCHMARK_OPTIONS.keys()),
+        index=0,
+        help="総資産推移にベンチマークのパフォーマンスを重ねて表示",
+    )
+    benchmark_symbol = _BENCHMARK_OPTIONS[benchmark_label]
+
+    show_individual = st.checkbox(
+        "銘柄別の個別チャートを表示",
+        value=False,
+    )
+
+    st.markdown("---")
+
+    # --- 目標・推定セクション ---
+    st.markdown("#### 🎯 目標・将来推定")
+
+    show_projection = st.checkbox(
+        "目標ライン & 将来推定を表示",
+        value=True,
+    )
+
+    target_amount = st.number_input(
+        "🎯 目標資産額（万円）",
+        min_value=0,
+        max_value=100000,
+        value=5000,
+        step=500,
+        help="総資産推移グラフに水平ラインとして表示",
+    ) * 10000  # 万円→円
+
+    projection_years = st.slider(
+        "📅 推定期間（年）",
+        min_value=1,
+        max_value=20,
+        value=5,
+        help="現在の保有銘柄のリターン推定に基づく将来推移",
+    )
+
+    st.markdown("---")
+
+    # --- データ更新セクション ---
+    st.markdown("#### 🔄 データ更新")
+
+    _REFRESH_OPTIONS = [
+        ("なし（手動のみ）", 0),
+        ("1分", 60),
+        ("5分", 300),
+        ("15分", 900),
+        ("30分", 1800),
+        ("1時間", 3600),
+    ]
+    auto_refresh_label = st.selectbox(
+        "⏱ 自動更新間隔",
+        options=[label for label, _ in _REFRESH_OPTIONS],
+        index=2,  # デフォルト: 5分
+        help="選択した間隔でダッシュボードを自動リロードします",
+    )
+    auto_refresh_sec = dict(_REFRESH_OPTIONS)[auto_refresh_label]
+
+# 自動更新タイマー（タブ外に配置）
+if auto_refresh_sec > 0:
+    _refresh_count = st_autorefresh(
+        interval=auto_refresh_sec * 1000,
+        limit=0,  # 無制限
+        key="auto_refresh",
+    )
+else:
+    _refresh_count = 0
+
+# 手動更新ボタン（タブ外に配置）
 if st.sidebar.button("🔄 今すぐ更新", use_container_width=True):
-    # Streamlit キャッシュをクリア
     load_snapshot.clear()
     load_history.clear()
     load_trade_activity.clear()
-    # ディスクキャッシュもクリア
     _cache_dir = Path(_SCRIPT_DIR).resolve().parents[4] / "data" / "cache" / "price_history"
     if _cache_dir.exists():
         for f in _cache_dir.glob("*.csv"):
@@ -226,7 +301,6 @@ if "last_refresh" not in st.session_state:
     st.session_state["last_refresh"] = time.strftime("%Y-%m-%d %H:%M:%S")
     st.session_state["_prev_refresh_count"] = 0
 
-# 自動更新タイマーが発火した場合もキャッシュをクリア
 if _refresh_count > st.session_state.get("_prev_refresh_count", 0):
     load_snapshot.clear()
     load_history.clear()
@@ -255,18 +329,18 @@ except Exception as _data_err:
     st.info("ネットワーク接続を確認するか、「🔄 今すぐ更新」ボタンで再試行してください。")
     st.stop()
 
-# FXレート表示（サイドバー）
+# FXレート表示（サイドバー下部）
 _fx = snapshot.get("fx_rates", {})
 _fx_display = {k: v for k, v in _fx.items() if k != "JPY" and v != 1.0}
 if _fx_display:
-    st.sidebar.markdown("### 💱 為替レート")
-    for cur, rate in sorted(_fx_display.items()):
-        st.sidebar.caption(f"{cur}/JPY: ¥{rate:,.2f}")
-    st.sidebar.markdown("---")
+    with st.sidebar.expander("💱 為替レート", expanded=False):
+        for cur, rate in sorted(_fx_display.items()):
+            st.caption(f"{cur}/JPY: ¥{rate:,.2f}")
 
 # =====================================================================
 # KPI メトリクスカード
 # =====================================================================
+st.markdown('<div id="summary"></div>', unsafe_allow_html=True)
 st.markdown("### 📈 サマリー")
 
 positions = snapshot["positions"]
@@ -278,15 +352,42 @@ realized_pnl = snapshot.get("realized_pnl", {}).get("total_jpy", 0)
 total_pnl = unrealized_pnl + realized_pnl
 num_holdings = len([p for p in positions if p.get("sector") != "Cash"])
 
-# --- KPIカード共通ヘルパー ---
-def _kpi_card(label: str, value: str, sub: str = "", color: str = "#e2e8f0",
-              bg: str = "linear-gradient(135deg, #1e293b 0%, #334155 100%)") -> str:
-    sub_html = f'<span style="font-size:0.8rem; color:{color};">{sub}</span>' if sub else ""
+# --- 大項目カード（トータル資産 / 評価損益 / 保有銘柄数） ---
+def _kpi_main(label: str, value: str, sub: str = "", color: str = "") -> str:
+    """大項目 KPI: テーマ追従 + 大きめフォント."""
+    color_style = f"color:{color};" if color else ""
+    sub_html = (
+        f'<div style="font-size:0.92rem; {color_style} margin-top:4px; opacity:0.85;">{sub}</div>'
+        if sub else ""
+    )
     return (
-        f'<div style="background:{bg}; border-radius:12px; padding:16px 20px; text-align:center;">'
-        f'<span style="font-size:0.8rem; opacity:0.7; color:#94a3b8;">{label}</span><br>'
-        f'<span style="font-size:1.6rem; font-weight:700; color:{color};">{value}</span><br>'
+        f'<div class="kpi-card kpi-main">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value" style="{color_style}">{value}</div>'
         f'{sub_html}'
+        f'</div>'
+    )
+
+# --- 小項目カード（損益サブ指標） ---
+def _kpi_sub(label: str, value: str, color: str = "") -> str:
+    """小項目 KPI: テーマ追従 + コンパクト."""
+    color_style = f"color:{color};" if color else ""
+    return (
+        f'<div class="kpi-card kpi-sub">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value-sub" style="{color_style}">{value}</div>'
+        f'</div>'
+    )
+
+# --- リスク指標カード ---
+def _risk_card(label: str, value: str, color: str = "") -> str:
+    """リスク指標: テーマ追従 + 最小サイズ."""
+    color_style = f"color:{color};" if color else ""
+    return (
+        f'<div class="kpi-card kpi-risk">'
+        f'<div class="kpi-label" style="white-space:nowrap;'
+        f' overflow:hidden; text-overflow:ellipsis;">{label}</div>'
+        f'<div class="kpi-value-risk" style="{color_style}">{value}</div>'
         f'</div>'
     )
 
@@ -295,48 +396,49 @@ _unr_sign = "+" if unrealized_pnl >= 0 else ""
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.markdown(_kpi_card("トータル資産（円換算）", f"¥{total_value:,.0f}"), unsafe_allow_html=True)
+    st.markdown(_kpi_main("トータル資産（円換算）", f"¥{total_value:,.0f}"), unsafe_allow_html=True)
 with col2:
-    st.markdown(_kpi_card(
+    st.markdown(_kpi_main(
         "評価損益（含み）",
         f"{_unr_sign}¥{unrealized_pnl:,.0f}",
         sub=f"{unrealized_pnl_pct:+.2f}%",
         color=_unr_color,
     ), unsafe_allow_html=True)
 with col3:
-    st.markdown(_kpi_card(
+    st.markdown(_kpi_main(
         "保有銘柄数",
         f"{num_holdings}",
         sub=f"更新: {snapshot['as_of'][:10]}",
         color="#60a5fa",
     ), unsafe_allow_html=True)
 
-# --- サブ KPI ---
+# --- 小項目: 損益 ---
 realized_sign = "+" if realized_pnl >= 0 else ""
 total_pnl_sign = "+" if total_pnl >= 0 else ""
 realized_color = "#4ade80" if realized_pnl >= 0 else "#f87171"
 total_pnl_color = "#4ade80" if total_pnl >= 0 else "#f87171"
 
+st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+
 sub_col1, sub_col2 = st.columns(2)
 with sub_col1:
-    st.markdown(_kpi_card(
+    st.markdown(_kpi_sub(
         "トータル損益（実現＋含み）",
         f"{total_pnl_sign}¥{total_pnl:,.0f}",
         color=total_pnl_color,
-        bg="linear-gradient(135deg, #1a2332 0%, #2d3748 100%)",
     ), unsafe_allow_html=True)
 with sub_col2:
-    st.markdown(_kpi_card(
+    st.markdown(_kpi_sub(
         "実現損益（確定済）",
         f"{realized_sign}¥{realized_pnl:,.0f}",
         color=realized_color,
-        bg="linear-gradient(135deg, #1a2332 0%, #2d3748 100%)",
     ), unsafe_allow_html=True)
 
 # --- リスク指標 ---
 if not history_df.empty:
     risk = compute_risk_metrics(history_df)
-    rcol1, rcol2, rcol3, rcol4, rcol5 = st.columns(5)
+
+    st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
 
     _sharpe_color = "#4ade80" if risk["sharpe_ratio"] >= 1.0 else (
         "#fbbf24" if risk["sharpe_ratio"] >= 0.5 else "#f87171"
@@ -345,36 +447,30 @@ if not history_df.empty:
         "#fbbf24" if risk["max_drawdown_pct"] > -20 else "#f87171"
     )
 
-    def _risk_card(label: str, value: str, color: str = "#e2e8f0") -> str:
-        return (
-            f'<div style="text-align:center; padding:4px 0;">'
-            f'<span style="font-size:0.75rem; opacity:0.7;">{label}</span><br>'
-            f'<span style="font-size:1.1rem; font-weight:600; color:{color};">{value}</span>'
-            f'</div>'
-        )
-
+    rcol1, rcol2, rcol3, rcol4, rcol5 = st.columns(5)
     with rcol1:
         st.markdown(_risk_card("年率リターン", f"{risk['annual_return_pct']:+.1f}%",
                                "#4ade80" if risk["annual_return_pct"] > 0 else "#f87171"),
                     unsafe_allow_html=True)
     with rcol2:
-        st.markdown(_risk_card("年率ボラティリティ", f"{risk['annual_volatility_pct']:.1f}%"),
+        st.markdown(_risk_card("ボラティリティ", f"{risk['annual_volatility_pct']:.1f}%"),
                     unsafe_allow_html=True)
     with rcol3:
-        st.markdown(_risk_card("シャープレシオ", f"{risk['sharpe_ratio']:.2f}", _sharpe_color),
+        st.markdown(_risk_card("Sharpe", f"{risk['sharpe_ratio']:.2f}", _sharpe_color),
                     unsafe_allow_html=True)
     with rcol4:
-        st.markdown(_risk_card("最大ドローダウン", f"{risk['max_drawdown_pct']:.1f}%", _mdd_color),
+        st.markdown(_risk_card("最大DD", f"{risk['max_drawdown_pct']:.1f}%", _mdd_color),
                     unsafe_allow_html=True)
     with rcol5:
-        st.markdown(_risk_card("カルマーレシオ", f"{risk['calmar_ratio']:.2f}"),
+        st.markdown(_risk_card("Calmar", f"{risk['calmar_ratio']:.2f}"),
                     unsafe_allow_html=True)
 
-st.markdown("---")
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
 # =====================================================================
 # 総資産推移グラフ
 # =====================================================================
+st.markdown('<div id="total-chart"></div>', unsafe_allow_html=True)
 st.markdown("### 📊 総資産推移")
 
 if not history_df.empty:
@@ -390,6 +486,7 @@ if not history_df.empty:
     # 投資額 vs 評価額
     # ---------------------------------------------------------------
     if show_invested and "invested" in history_df.columns:
+        st.markdown('<div id="invested-chart"></div>', unsafe_allow_html=True)
         st.markdown("### 💰 投資額 vs 評価額")
         fig_inv = build_invested_chart(history_df)
         st.plotly_chart(fig_inv, key="chart_invested")
@@ -398,6 +495,7 @@ if not history_df.empty:
     # 目標ライン & 将来推定推移
     # ---------------------------------------------------------------
     if show_projection:
+        st.markdown('<div id="projection"></div>', unsafe_allow_html=True)
         st.markdown("### 🔮 総資産推移 & 将来推定")
 
         projection_df = build_projection(
@@ -451,11 +549,12 @@ if not history_df.empty:
 else:
     st.warning("株価履歴データが取得できませんでした。")
 
-st.markdown("---")
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
 # =====================================================================
 # 現在の保有構成
 # =====================================================================
+st.markdown('<div id="holdings"></div>', unsafe_allow_html=True)
 col_left, col_right = st.columns([3, 2])
 
 with col_left:
@@ -525,12 +624,13 @@ with col_right:
     if fig_cur is not None:
         st.plotly_chart(fig_cur, key="chart_currency")
 
-st.markdown("---")
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
 # =====================================================================
 # 銘柄別個別チャート
 # =====================================================================
 if show_individual and not history_df.empty:
+    st.markdown('<div id="individual-chart"></div>', unsafe_allow_html=True)
     st.markdown("### 📉 銘柄別 個別推移")
 
     stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
@@ -546,11 +646,12 @@ if show_individual and not history_df.empty:
                 fig_ind = build_individual_chart(history_df, symbol)
                 st.plotly_chart(fig_ind, key=f"chart_ind_{symbol}")
 
-    st.markdown("---")
+    st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
 # =====================================================================
 # 月次サマリー
 # =====================================================================
+st.markdown('<div id="monthly"></div>', unsafe_allow_html=True)
 st.markdown("### 📅 月次サマリー")
 
 if not history_df.empty:
@@ -596,9 +697,12 @@ if not history_df.empty:
 else:
     st.info("履歴データがありません")
 
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
 # =====================================================================
 # 取引アクティビティ
 # =====================================================================
+st.markdown('<div id="trade-activity"></div>', unsafe_allow_html=True)
 st.markdown("### 🔄 月次売買アクティビティ")
 
 
@@ -631,7 +735,7 @@ else:
 # =====================================================================
 # フッター
 # =====================================================================
-st.markdown("---")
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 st.caption(
     "Data provided by Yahoo Finance via yfinance. "
     "Values are estimates and may differ from actual brokerage accounts."
