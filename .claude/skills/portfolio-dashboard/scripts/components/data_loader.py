@@ -1134,3 +1134,76 @@ def compute_correlation_matrix(
     # 相関行列
     corr = daily_returns.corr(min_periods=min_periods)
     return corr
+
+
+# ---------------------------------------------------------------------------
+# 15. ウェイトドリフト判定
+# ---------------------------------------------------------------------------
+
+def compute_weight_drift(
+    positions: list[dict],
+    total_value_jpy: float,
+    target_weights: dict[str, float] | None = None,
+    threshold_pct: float = 5.0,
+) -> list[dict]:
+    """各銘柄の現在ウェイトと目標ウェイトの乖離を計算し、閾値超過を返す.
+
+    Parameters
+    ----------
+    positions : list[dict]
+        get_current_snapshot()["positions"]
+    total_value_jpy : float
+        ポートフォリオ総額(円)
+    target_weights : dict[str, float] | None
+        銘柄シンボル→目標ウェイト(%)のマップ。
+        None の場合は均等ウェイト（= 100 / 銘柄数）を適用。
+    threshold_pct : float
+        乖離警告の閾値(ポイント)。デフォルト5.0pp。
+
+    Returns
+    -------
+    list[dict]
+        乖離が閾値を超えた銘柄のリスト。各要素:
+        - symbol: str
+        - name: str
+        - current_pct: float  (現在ウェイト%)
+        - target_pct: float   (目標ウェイト%)
+        - drift_pct: float    (乖離幅pp, 正=オーバーウェイト)
+        - status: str         ("overweight" | "underweight")
+    """
+    if not positions or total_value_jpy <= 0:
+        return []
+
+    # Cash を除外した銘柄のみ対象
+    stock_positions = [p for p in positions if p.get("sector") != "Cash"]
+    if not stock_positions:
+        return []
+
+    n = len(stock_positions)
+    equal_weight = 100.0 / n if n > 0 else 0
+
+    results = []
+    for p in stock_positions:
+        symbol = p["symbol"]
+        current_pct = p["evaluation_jpy"] / total_value_jpy * 100
+
+        if target_weights and symbol in target_weights:
+            target_pct = target_weights[symbol]
+        else:
+            target_pct = equal_weight
+
+        drift = current_pct - target_pct
+
+        if abs(drift) >= threshold_pct:
+            results.append({
+                "symbol": symbol,
+                "name": p.get("name", symbol),
+                "current_pct": round(current_pct, 1),
+                "target_pct": round(target_pct, 1),
+                "drift_pct": round(drift, 1),
+                "status": "overweight" if drift > 0 else "underweight",
+            })
+
+    # 乖離の大きい順にソート
+    results.sort(key=lambda x: abs(x["drift_pct"]), reverse=True)
+    return results

@@ -48,6 +48,13 @@ try:
 except ImportError:
     _HAS_PHASE4 = False
 
+# Phase 5 imports — conditional
+try:
+    from components.data_loader import compute_weight_drift
+    _HAS_PHASE5 = True
+except ImportError:
+    _HAS_PHASE5 = False
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1048,3 +1055,90 @@ class TestCorrelationChart:
         from components.charts import build_correlation_chart
         corr = pd.DataFrame([[1.0]], index=["AAA"], columns=["AAA"])
         assert build_correlation_chart(corr) is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: compute_weight_drift
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _HAS_PHASE5, reason="Phase5 not available")
+class TestWeightDrift:
+    """ウェイトドリフト判定テスト."""
+
+    def test_equal_weight_drift(self):
+        """均等ウェイトからの乖離検出."""
+        positions = [
+            {"symbol": "AAA", "name": "Stock A", "evaluation_jpy": 600000,
+             "sector": "Tech"},
+            {"symbol": "BBB", "name": "Stock B", "evaluation_jpy": 300000,
+             "sector": "Finance"},
+            {"symbol": "CCC", "name": "Stock C", "evaluation_jpy": 100000,
+             "sector": "Energy"},
+        ]
+        total = 1000000
+        # Equal weight = 33.3%
+        # AAA: 60% (+26.7pp), BBB: 30% (-3.3pp), CCC: 10% (-23.3pp)
+        alerts = compute_weight_drift(positions, total, threshold_pct=5.0)
+        symbols = [a["symbol"] for a in alerts]
+        assert "AAA" in symbols  # +26.7pp
+        assert "CCC" in symbols  # -23.3pp
+        # BBB is within threshold (-3.3pp < 5.0)
+        assert "BBB" not in symbols
+
+    def test_custom_target(self):
+        """カスタム目標ウェイトからの乖離."""
+        positions = [
+            {"symbol": "AAA", "name": "Stock A", "evaluation_jpy": 500000,
+             "sector": "Tech"},
+            {"symbol": "BBB", "name": "Stock B", "evaluation_jpy": 500000,
+             "sector": "Finance"},
+        ]
+        total = 1000000
+        # AAA: 50%, target 70% -> drift -20pp
+        # BBB: 50%, target 30% -> drift +20pp
+        target = {"AAA": 70.0, "BBB": 30.0}
+        alerts = compute_weight_drift(positions, total, target_weights=target,
+                                       threshold_pct=5.0)
+        assert len(alerts) == 2
+        aaa = next(a for a in alerts if a["symbol"] == "AAA")
+        assert aaa["status"] == "underweight"
+        assert aaa["drift_pct"] == pytest.approx(-20.0, abs=0.5)
+        bbb = next(a for a in alerts if a["symbol"] == "BBB")
+        assert bbb["status"] == "overweight"
+
+    def test_no_drift(self):
+        """乖離がない場合."""
+        positions = [
+            {"symbol": "AAA", "name": "A", "evaluation_jpy": 500000,
+             "sector": "Tech"},
+            {"symbol": "BBB", "name": "B", "evaluation_jpy": 500000,
+             "sector": "Tech"},
+        ]
+        # 均等=50% で実際も50%ずつ → ドリフトなし
+        alerts = compute_weight_drift(positions, 1000000)
+        assert alerts == []
+
+    def test_cash_excluded(self):
+        """Cash ポジションはドリフト計算から除外."""
+        positions = [
+            {"symbol": "JPY.CASH", "name": "Cash", "evaluation_jpy": 200000,
+             "sector": "Cash"},
+            {"symbol": "AAA", "name": "A", "evaluation_jpy": 800000,
+             "sector": "Tech"},
+        ]
+        # Cash除外 → 株式1銘柄だけ → 均等=100%
+        # AAA: 800k/1000k=80% vs target 100% → drift -20pp
+        alerts = compute_weight_drift(positions, 1000000)
+        # AAA is only stock, target = 100%, current = 80%, drift = -20pp
+        assert len(alerts) == 1
+        assert alerts[0]["symbol"] == "AAA"
+
+    def test_empty_positions(self):
+        """空ポジションは空リスト."""
+        assert compute_weight_drift([], 1000000) == []
+
+    def test_zero_total(self):
+        """総額0は空リスト."""
+        positions = [{"symbol": "AAA", "name": "A", "evaluation_jpy": 0,
+                       "sector": "Tech"}]
+        assert compute_weight_drift(positions, 0) == []

@@ -36,6 +36,7 @@ from components.data_loader import (
     compute_drawdown_series,
     compute_rolling_sharpe,
     compute_correlation_matrix,
+    compute_weight_drift,
     get_benchmark_series,
 )
 from components.charts import (
@@ -734,6 +735,34 @@ if fig_treemap is not None:
     st.plotly_chart(fig_treemap, use_container_width=True, key="chart_treemap")
 else:
     st.info("ツリーマップの表示に必要なデータがありません")
+
+# --- ウェイトドリフト警告 ---
+drift_alerts = compute_weight_drift(positions, total_value)
+if drift_alerts:
+    st.markdown("### ⚖️ ウェイトドリフト警告")
+    st.caption("均等ウェイトからの乖離が5pp以上の銘柄")
+    drift_cols = st.columns(min(len(drift_alerts), 4))
+    for i, alert in enumerate(drift_alerts[:4]):
+        with drift_cols[i]:
+            if alert["status"] == "overweight":
+                icon = "🔺"
+                color = "#f59e0b"
+                label = "オーバーウェイト"
+            else:
+                icon = "🔻"
+                color = "#6366f1"
+                label = "アンダーウェイト"
+            st.markdown(
+                f'<div class="kpi-card kpi-risk" style="text-align:center;">'
+                f'<span style="font-size:0.8rem; opacity:0.7;">{icon} {label}</span><br>'
+                f'<span style="font-size:1.1rem; font-weight:600;">{alert["name"]}</span><br>'
+                f'<span style="font-size:0.85rem;">現在 {alert["current_pct"]:.1f}% '
+                f'→ 目標 {alert["target_pct"]:.1f}%</span><br>'
+                f'<span style="font-size:1.0rem; font-weight:600; color:{color};">'
+                f'{alert["drift_pct"]:+.1f}pp</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
 # --- 銘柄間相関ヒートマップ ---
 if not history_df.empty:
