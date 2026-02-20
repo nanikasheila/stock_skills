@@ -350,7 +350,7 @@ else:
     _refresh_count = 0
 
 # 手動更新ボタン（タブ外に配置）
-if st.sidebar.button("🔄 今すぐ更新", use_container_width=True):
+if st.sidebar.button("🔄 今すぐ更新", width="stretch"):
     load_snapshot.clear()
     load_history.clear()
     load_trade_activity.clear()
@@ -736,7 +736,7 @@ if health_data is not None:
                     else ("color: #f87171" if isinstance(v, (int, float)) and v < 0 else ""),
                     subset=["含み損益(%)"],
                 ),
-                use_container_width=True,
+                width="stretch",
                 height=min(400, 60 + len(hc_table_data) * 38),
             )
 
@@ -997,7 +997,7 @@ with col_right:
 st.markdown("### 🌳 構成比ツリーマップ")
 fig_treemap = build_treemap_chart(positions)
 if fig_treemap is not None:
-    st.plotly_chart(fig_treemap, use_container_width=True, key="chart_treemap")
+    st.plotly_chart(fig_treemap, width="stretch", key="chart_treemap")
 else:
     st.info("ツリーマップの表示に必要なデータがありません")
 
@@ -1036,7 +1036,7 @@ if not history_df.empty:
         st.markdown("### 🔗 銘柄間 日次リターン相関")
         fig_corr = build_correlation_chart(corr_matrix)
         if fig_corr is not None:
-            st.plotly_chart(fig_corr, use_container_width=True, key="chart_correlation")
+            st.plotly_chart(fig_corr, width="stretch", key="chart_correlation")
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
