@@ -13,3 +13,6 @@ data/models/
 
 # Test output files
 test_*.txt
+
+# User-specific settings
+dashboard_settings.json
