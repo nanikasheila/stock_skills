@@ -441,6 +441,7 @@ if _fx_display:
 # =====================================================================
 st.markdown('<div id="summary"></div>', unsafe_allow_html=True)
 st.markdown("### 📈 サマリー")
+st.caption("ポートフォリオ全体の現在価値・損益・リスク指標を一目で把握するセクションです。")
 
 positions = snapshot["positions"]
 total_value = snapshot["total_value_jpy"]
@@ -647,6 +648,7 @@ st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 # =====================================================================
 st.markdown('<div id="health-check"></div>', unsafe_allow_html=True)
 st.markdown("### 🏥 ヘルスチェック")
+st.caption("各銘柄のトレンド・テクニカル指標をチェックし、売りタイミングや注意が必要な銘柄を自動検出します。")
 
 try:
     health_data = load_health_check()
@@ -857,6 +859,7 @@ st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 # =====================================================================
 st.markdown('<div id="total-chart"></div>', unsafe_allow_html=True)
 st.markdown("### 📊 総資産推移")
+st.caption("資産全体の値動きを時系列で確認。ドローダウンやシャープレシオの推移も合わせて表示します。")
 
 if not history_df.empty:
     # ベンチマーク系列の取得
@@ -890,6 +893,7 @@ if not history_df.empty:
     if show_invested and "invested" in history_df.columns:
         st.markdown('<div id="invested-chart"></div>', unsafe_allow_html=True)
         st.markdown("### 💰 投資額 vs 評価額")
+        st.caption("累計投資額と現在の評価額を比較し、投入資金に対するリターンを視覚的に確認できます。")
         fig_inv = build_invested_chart(history_df)
         st.plotly_chart(fig_inv, key="chart_invested")
 
@@ -899,6 +903,7 @@ if not history_df.empty:
     if show_projection:
         st.markdown('<div id="projection"></div>', unsafe_allow_html=True)
         st.markdown("### 🔮 総資産推移 & 将来推定")
+        st.caption("過去のリターン実績をもとに、楽観・基本・悲観の3シナリオで将来の資産推移を推計します。")
 
         projection_df = build_projection(
             current_value=total_value,
@@ -961,6 +966,7 @@ col_left, col_right = st.columns([3, 2])
 
 with col_left:
     st.markdown("### 🏢 銘柄別 評価額")
+    st.caption("保有銘柄ごとの評価額・損益率を確認。構成比の偏りや損益の大きい銘柄を把握できます。")
 
     holdings_df = pd.DataFrame([
         {
@@ -1012,6 +1018,7 @@ with col_left:
 
 with col_right:
     st.markdown("### 🥧 セクター構成")
+    st.caption("セクター別の配分比率。特定業種への偏りがないか確認しましょう。")
 
     sector_df = get_sector_breakdown(snapshot)
     if not sector_df.empty:
@@ -1022,12 +1029,14 @@ with col_right:
 
     # 通貨別エクスポージャー
     st.markdown("### 💱 通貨別配分")
+    st.caption("通貨エクスポージャーの確認。為替リスクの偏りを把握できます。")
     fig_cur = build_currency_chart(positions)
     if fig_cur is not None:
         st.plotly_chart(fig_cur, key="chart_currency")
 
 # --- 構成比ツリーマップ（フルワイド表示） ---
 st.markdown("### 🌳 構成比ツリーマップ")
+st.caption("銘柄の評価額を面積で表現。大きいほど構成比が高く、ポートフォリオ全体像を直感的に把握できます。")
 fig_treemap = build_treemap_chart(positions)
 if fig_treemap is not None:
     st.plotly_chart(fig_treemap, width="stretch", key="chart_treemap")
@@ -1038,7 +1047,7 @@ else:
 drift_alerts = compute_weight_drift(positions, total_value)
 if drift_alerts:
     st.markdown("### ⚖️ ウェイトドリフト警告")
-    st.caption("均等ウェイトからの乖離が5pp以上の銘柄")
+    st.caption("均等配分からの乖離が大きい銘柄を表示。値上がりで膨らんだ銘柄のリバランス検討に活用できます。")
     drift_cols = st.columns(min(len(drift_alerts), 4))
     for i, alert in enumerate(drift_alerts[:4]):
         with drift_cols[i]:
@@ -1067,6 +1076,7 @@ if not history_df.empty:
     corr_matrix = compute_correlation_matrix(history_df)
     if not corr_matrix.empty:
         st.markdown("### 🔗 銘柄間 日次リターン相関")
+        st.caption("銘柄同士の値動きの連動性を表示。相関が高い銘柄が多いと分散効果が薄れるため、確認が重要です。")
         fig_corr = build_correlation_chart(corr_matrix)
         if fig_corr is not None:
             st.plotly_chart(fig_corr, width="stretch", key="chart_correlation")
@@ -1079,6 +1089,7 @@ st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 if show_individual and not history_df.empty:
     st.markdown('<div id="individual-chart"></div>', unsafe_allow_html=True)
     st.markdown("### 📉 銘柄別 個別推移")
+    st.caption("各銘柄の評価額推移を個別に確認。特定銘柄の値動きパターンを詳しく見たいときに。")
 
     stock_cols = [c for c in history_df.columns if c not in ("total", "invested")]
     cols_per_row = 2
@@ -1100,6 +1111,7 @@ if show_individual and not history_df.empty:
 # =====================================================================
 st.markdown('<div id="monthly"></div>', unsafe_allow_html=True)
 st.markdown("### 📅 月次サマリー")
+st.caption("月末時点の評価額と前月比変動率を一覧表示。月単位でのパフォーマンス傾向を確認できます。")
 
 if not history_df.empty:
     monthly_df = get_monthly_summary(history_df)
@@ -1151,7 +1163,7 @@ st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 # =====================================================================
 st.markdown('<div id="trade-activity"></div>', unsafe_allow_html=True)
 st.markdown("### 🔄 月次売買アクティビティ")
-
+st.caption("月ごとの売買件数・金額フローを表示。投資ペースや資金の出入りを振り返るのに便利です。")
 
 trade_act_df = load_trade_activity()
 if not trade_act_df.empty:
