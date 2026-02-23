@@ -25,6 +25,12 @@ DEFAULTS: dict[str, Any] = {
     "target_amount_man": 5000,
     "projection_years": 5,
     "auto_refresh_label": "5分",
+    # LLM ニュース分析設定
+    "llm_enabled": False,
+    "llm_model": "gpt-4.1",
+    "llm_cache_ttl_label": "1時間",
+    # Copilot チャット設定
+    "chat_model": "claude-sonnet-4",
 }
 
 

@@ -39,8 +39,28 @@ from components.data_loader import (
     compute_weight_drift,
     get_benchmark_series,
     run_dashboard_health_check,
+    fetch_economic_news,
 )
 from components.settings_store import load_settings, save_settings, DEFAULTS
+from components.llm_analyzer import (
+    AVAILABLE_MODELS as LLM_MODELS,
+    CACHE_TTL_OPTIONS as LLM_CACHE_OPTIONS,
+    is_available as llm_is_available,
+    get_cache_info as llm_get_cache_info,
+    clear_cache as llm_clear_cache,
+    generate_news_summary,
+    get_summary_cache_info as llm_get_summary_cache_info,
+    clear_summary_cache as llm_clear_summary_cache,
+    generate_health_summary,
+    get_health_summary_cache_info as llm_get_health_summary_cache_info,
+    clear_health_summary_cache as llm_clear_health_summary_cache,
+)
+from components.copilot_client import (
+    get_execution_logs as copilot_get_logs,
+    clear_execution_logs as copilot_clear_logs,
+    call as copilot_call,
+    AVAILABLE_MODELS as COPILOT_MODELS,
+)
 from components.charts import (
     build_total_chart,
     build_invested_chart,
@@ -177,6 +197,15 @@ st.markdown("""
         opacity: 0.7;
         padding-left: 12px;
     }
+    .sell-alert-ai {
+        font-size: 0.82rem;
+        line-height: 1.5;
+        margin-top: 6px;
+        padding: 6px 10px;
+        background: rgba(99,102,241,0.08);
+        border-radius: 6px;
+        border-left: 2px solid rgba(99,102,241,0.3);
+    }
     /* Health card */
     .health-card {
         background: var(--secondary-background-color);
@@ -189,6 +218,278 @@ st.markdown("""
     .health-card-early_warning { border-left-color: #fbbf24; }
     .health-card-caution { border-left-color: #fb923c; }
     .health-card-exit { border-left-color: #f87171; }
+    /* News cards */
+    .news-card {
+        background: var(--secondary-background-color);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 8px;
+        border-left: 4px solid #64748b;
+        transition: background 0.2s;
+    }
+    .news-card:hover {
+        filter: brightness(1.05);
+    }
+    .news-impact-high { border-left-color: #f87171; }
+    .news-impact-medium { border-left-color: #fbbf24; }
+    .news-impact-low { border-left-color: #60a5fa; }
+    .news-impact-none { border-left-color: #64748b; }
+    .news-title {
+        font-weight: 600;
+        font-size: 0.92rem;
+        line-height: 1.4;
+        margin-bottom: 6px;
+    }
+    .news-title a {
+        color: inherit;
+        text-decoration: none;
+    }
+    .news-title a:hover {
+        text-decoration: underline;
+        opacity: 0.9;
+    }
+    .news-meta {
+        font-size: 0.78rem;
+        opacity: 0.6;
+        margin-bottom: 6px;
+    }
+    .news-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        margin-right: 4px;
+        margin-bottom: 2px;
+    }
+    .news-badge-category {
+        background: rgba(99,102,241,0.15);
+        color: #a5b4fc;
+    }
+    .news-badge-impact-high {
+        background: rgba(248,113,113,0.18);
+        color: #fca5a5;
+    }
+    .news-badge-impact-medium {
+        background: rgba(251,191,36,0.18);
+        color: #fde68a;
+    }
+    .news-badge-impact-low {
+        background: rgba(96,165,250,0.15);
+        color: #93c5fd;
+    }
+    .news-affected {
+        font-size: 0.8rem;
+        opacity: 0.75;
+        margin-top: 4px;
+        padding-left: 4px;
+    }
+    .news-number {
+        display: inline-block;
+        background: rgba(148,163,184,0.2);
+        color: #94a3b8;
+        font-size: 0.68rem;
+        font-weight: 700;
+        border-radius: 4px;
+        padding: 1px 5px;
+        margin-right: 6px;
+        vertical-align: middle;
+    }
+    /* Summary card */
+    .news-summary-card {
+        background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(59,130,246,0.06));
+        border: 1px solid rgba(99,102,241,0.2);
+        border-radius: 12px;
+        padding: 18px 20px;
+    }
+    .news-summary-header {
+        font-weight: 700;
+        font-size: 1.0rem;
+        margin-bottom: 10px;
+    }
+    .news-summary-overview {
+        font-size: 0.9rem;
+        line-height: 1.6;
+        margin-bottom: 14px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid rgba(148,163,184,0.15);
+    }
+    .news-summary-points {
+        margin-bottom: 12px;
+    }
+    .news-summary-point {
+        margin-bottom: 8px;
+        line-height: 1.5;
+    }
+    .news-summary-cat {
+        font-weight: 600;
+        font-size: 0.85rem;
+        margin-right: 6px;
+    }
+    .news-summary-text {
+        font-size: 0.85rem;
+        opacity: 0.9;
+    }
+    .news-ref {
+        display: inline-block;
+        background: rgba(99,102,241,0.18);
+        color: #a5b4fc;
+        font-size: 0.68rem;
+        font-weight: 700;
+        border-radius: 4px;
+        padding: 0px 4px;
+        margin: 0 1px;
+    }
+    .news-refs {
+        font-size: 0.72rem;
+        opacity: 0.7;
+    }
+    .news-summary-alert {
+        background: rgba(251,191,36,0.1);
+        border: 1px solid rgba(251,191,36,0.25);
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-size: 0.85rem;
+        margin-top: 10px;
+    }
+    /* Health summary card */
+    .health-summary-card {
+        background: linear-gradient(135deg, rgba(74,222,128,0.08), rgba(59,130,246,0.06));
+        border: 1px solid rgba(74,222,128,0.2);
+        border-radius: 12px;
+        padding: 18px 20px;
+    }
+    .health-summary-header {
+        font-weight: 700;
+        font-size: 1.0rem;
+        margin-bottom: 10px;
+    }
+    .health-summary-overview {
+        font-size: 0.9rem;
+        line-height: 1.6;
+        margin-bottom: 14px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid rgba(148,163,184,0.15);
+    }
+    .health-summary-stocks-toggle > summary {
+        font-weight: 600;
+        font-size: 0.88rem;
+        padding: 6px 0;
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #94a3b8;
+    }
+    .health-summary-stocks-toggle > summary::-webkit-details-marker { display: none; }
+    .health-summary-stocks-toggle > summary::before {
+        content: '▶';
+        font-size: 0.7rem;
+        transition: transform 0.2s;
+    }
+    .health-summary-stocks-toggle[open] > summary::before {
+        transform: rotate(90deg);
+    }
+    .health-summary-stocks-toggle[open] > summary {
+        margin-bottom: 8px;
+    }
+    .health-summary-stock {
+        margin-bottom: 8px;
+        padding: 8px 12px;
+        background: rgba(148,163,184,0.06);
+        border-radius: 8px;
+        border-left: 3px solid #94a3b8;
+    }
+    .health-summary-stock-exit {
+        border-left-color: #f87171;
+    }
+    .health-summary-stock-caution {
+        border-left-color: #fb923c;
+    }
+    .health-summary-stock-early_warning {
+        border-left-color: #fbbf24;
+    }
+    .health-summary-stock-name {
+        font-weight: 600;
+        font-size: 0.88rem;
+        margin-bottom: 2px;
+    }
+    .health-summary-stock-text {
+        font-size: 0.82rem;
+        opacity: 0.85;
+        line-height: 1.5;
+    }
+    .health-summary-action {
+        display: inline-block;
+        background: rgba(99,102,241,0.15);
+        color: #a5b4fc;
+        font-size: 0.72rem;
+        font-weight: 600;
+        border-radius: 4px;
+        padding: 1px 6px;
+        margin-left: 6px;
+    }
+    .health-summary-warning {
+        background: rgba(248,113,113,0.1);
+        border: 1px solid rgba(248,113,113,0.25);
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-size: 0.85rem;
+        margin-top: 10px;
+    }
+    /* Copilot Chat */
+    .copilot-chat-container {
+        background: linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.05));
+        border: 1px solid rgba(99,102,241,0.18);
+        border-radius: 12px;
+        padding: 18px 20px;
+    }
+    .copilot-chat-header {
+        font-weight: 700;
+        font-size: 1.0rem;
+        margin-bottom: 6px;
+    }
+    .copilot-chat-context-badge {
+        display: inline-block;
+        background: rgba(74,222,128,0.12);
+        color: #4ade80;
+        font-size: 0.72rem;
+        font-weight: 600;
+        border-radius: 4px;
+        padding: 2px 8px;
+        margin-right: 4px;
+    }
+    .copilot-chat-msg {
+        margin-bottom: 10px;
+        padding: 10px 14px;
+        border-radius: 10px;
+        font-size: 0.88rem;
+        line-height: 1.6;
+    }
+    .copilot-chat-msg-user {
+        background: rgba(99,102,241,0.12);
+        border-left: 3px solid rgba(99,102,241,0.5);
+    }
+    .copilot-chat-msg-ai {
+        background: rgba(148,163,184,0.08);
+        border-left: 3px solid rgba(148,163,184,0.3);
+    }
+    .copilot-chat-msg-role {
+        font-weight: 600;
+        font-size: 0.78rem;
+        opacity: 0.7;
+        margin-bottom: 3px;
+    }
+    .copilot-chat-msg-text {
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+    .copilot-chat-thinking {
+        font-size: 0.82rem;
+        opacity: 0.6;
+        padding: 8px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -215,6 +516,30 @@ def load_health_check():
     return run_dashboard_health_check()
 
 
+@st.cache_data(ttl=600, show_spinner="経済ニュースを取得中...")
+def load_economic_news(
+    _positions_key: str,
+    positions: list,
+    fx_rates: dict,
+    llm_enabled: bool = False,
+    llm_model: str | None = None,
+    llm_cache_ttl: int = 3600,
+):
+    """経済ニュースを取得してPF影響を分析する.
+
+    _positions_key はキャッシュキー用（保有銘柄が変わったら再取得）。
+    llm_enabled / llm_model でLLM分析の有無・モデルをキャッシュキーに含む。
+    llm_cache_ttl はLLM分析結果のキャッシュ有効期間（秒）。
+    """
+    return fetch_economic_news(
+        positions=positions,
+        fx_rates=fx_rates,
+        llm_enabled=llm_enabled,
+        llm_model=llm_model,
+        llm_cache_ttl=llm_cache_ttl,
+    )
+
+
 # =====================================================================
 # サイドバー（タブ: 目次 / 設定）
 # =====================================================================
@@ -228,6 +553,7 @@ with _tab_toc:
         '<div style="display:flex; flex-direction:column; gap:2px; padding:4px 0;">'
         '<a class="toc-link" href="#summary">📈 サマリー</a>'
         '<a class="toc-link" href="#health-check">🏥 ヘルスチェック</a>'
+        '<a class="toc-link" href="#economic-news">📰 経済ニュース & PF影響</a>'
         '<a class="toc-link" href="#total-chart">📊 総資産推移</a>'
         '<a class="toc-link" href="#invested-chart">💰 投資額 vs 評価額</a>'
         '<a class="toc-link" href="#projection">🔮 将来推定</a>'
@@ -235,6 +561,7 @@ with _tab_toc:
         '<a class="toc-link" href="#individual-chart">📉 銘柄別チャート</a>'
         '<a class="toc-link" href="#monthly">📅 月次サマリー</a>'
         '<a class="toc-link" href="#trade-activity">🔄 売買アクティビティ</a>'
+        '<a class="toc-link" href="#copilot-chat">💬 Copilot に相談</a>'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -356,6 +683,103 @@ with _tab_settings:
     )
     auto_refresh_sec = dict(_REFRESH_OPTIONS)[auto_refresh_label]
 
+    st.markdown("---")
+
+    # --- LLM ニュース分析セクション ---
+    st.markdown("#### 🤖 ニュース分析AI")
+
+    _llm_available = llm_is_available()
+
+    llm_enabled = st.checkbox(
+        "LLMでニュースを分析",
+        value=_saved.get("llm_enabled", False),
+        help=(
+            "GitHub Copilot CLI を使ってニュースのカテゴリ分類・PF影響を"
+            "AIで分析します。`copilot` CLI のインストールが必要です。"
+        ),
+        disabled=not _llm_available,
+    )
+
+    if not _llm_available:
+        st.caption("⚠️ `copilot` CLI が見つかりません。GitHub Copilot CLI をインストールしてください")
+
+    _model_ids = [m[0] for m in LLM_MODELS]
+    _model_labels = [m[1] for m in LLM_MODELS]
+    _saved_model = _saved.get("llm_model", "gpt-4.1")
+    _model_saved_idx = (
+        _model_ids.index(_saved_model)
+        if _saved_model in _model_ids
+        else 1
+    )
+
+    llm_model_label = st.selectbox(
+        "🧠 分析モデル",
+        options=_model_labels,
+        index=_model_saved_idx,
+        help="ニュース分析に使用するLLMモデル",
+        disabled=not llm_enabled,
+    )
+    llm_model = _model_ids[_model_labels.index(llm_model_label)]
+
+    # LLM 分析キャッシュ TTL
+    _ttl_labels = [t[0] for t in LLM_CACHE_OPTIONS]
+    _ttl_values = [t[1] for t in LLM_CACHE_OPTIONS]
+    _saved_ttl_label = _saved.get("llm_cache_ttl_label", "1時間")
+    _ttl_saved_idx = (
+        _ttl_labels.index(_saved_ttl_label)
+        if _saved_ttl_label in _ttl_labels
+        else 0
+    )
+
+    llm_cache_ttl_label = st.selectbox(
+        "⏳ 分析キャッシュ保持",
+        options=_ttl_labels,
+        index=_ttl_saved_idx,
+        help=(
+            "同じニュースに対して LLM 再分析をスキップする期間。"
+            "Premium Request の消費を抑えます。"
+        ),
+        disabled=not llm_enabled,
+    )
+    llm_cache_ttl_sec = _ttl_values[_ttl_labels.index(llm_cache_ttl_label)]
+
+    # --- Copilot チャットセクション ---
+    st.markdown("---")
+    st.markdown("#### 💬 チャットモデル")
+    _chat_model_ids = [m[0] for m in COPILOT_MODELS]
+    _chat_model_labels = [m[1] for m in COPILOT_MODELS]
+    _saved_chat_model = _saved.get("chat_model", "claude-sonnet-4")
+    _chat_model_saved_idx = (
+        _chat_model_ids.index(_saved_chat_model)
+        if _saved_chat_model in _chat_model_ids
+        else 0
+    )
+    chat_model_label = st.selectbox(
+        "🧠 チャットモデル",
+        options=_chat_model_labels,
+        index=_chat_model_saved_idx,
+        help="Copilot チャットで使用するモデル（分析モデルとは独立）",
+    )
+    chat_model = _chat_model_ids[_chat_model_labels.index(chat_model_label)]
+
+    # キャッシュ状態を表示
+    if llm_enabled:
+        _ci = llm_get_cache_info()
+        if _ci["cached"]:
+            _age_min = _ci["age_sec"] // 60
+            if _age_min < 60:
+                _age_str = f"{_age_min}分前"
+            else:
+                _age_str = f"{_age_min // 60}時間{_age_min % 60}分前"
+            st.caption(f"💾 キャッシュあり（{_age_str}に {_ci['model']} で分析済み）")
+            if st.button("🔄 今すぐ再分析", key="llm_reanalyze", help="キャッシュを破棄して LLM 分析をやり直します"):
+                llm_clear_cache()
+                llm_clear_summary_cache()
+                llm_clear_health_summary_cache()
+                st.rerun()
+        else:
+            st.caption("💾 キャッシュなし（次回更新時に LLM 分析を実行）")
+
     # --- 設定の自動保存 ---
     _current_settings = {
         "period_label": period_label,
@@ -367,6 +791,10 @@ with _tab_settings:
         "target_amount_man": int(target_amount // 10000),
         "projection_years": projection_years,
         "auto_refresh_label": auto_refresh_label,
+        "llm_enabled": llm_enabled,
+        "llm_model": llm_model,
+        "llm_cache_ttl_label": llm_cache_ttl_label,
+        "chat_model": chat_model,
     }
     if _current_settings != _saved:
         save_settings(_current_settings)
@@ -434,6 +862,7 @@ if st.sidebar.button("🔄 今すぐ更新", width="stretch"):
     load_history.clear()
     load_trade_activity.clear()
     load_health_check.clear()
+    load_economic_news.clear()
     _cache_dir = Path(_SCRIPT_DIR).resolve().parents[4] / "data" / "cache" / "price_history"
     if _cache_dir.exists():
         for f in _cache_dir.glob("*.csv"):
@@ -450,6 +879,7 @@ if _refresh_count > st.session_state.get("_prev_refresh_count", 0):
     load_history.clear()
     load_trade_activity.clear()
     load_health_check.clear()
+    load_economic_news.clear()
     st.session_state["last_refresh"] = time.strftime("%Y-%m-%d %H:%M:%S")
     st.session_state["_prev_refresh_count"] = _refresh_count
 
@@ -720,6 +1150,36 @@ if health_data is not None:
         with hc_cols[i]:
             st.markdown(_risk_card(label, str(count), color), unsafe_allow_html=True)
 
+    # --- LLM ヘルスチェック分析（売りアラート通知より先に実行） ---
+    _hc_llm_summary: dict | None = None
+    _hc_llm_assessment_map: dict[str, dict] = {}
+    if llm_enabled:
+        # 経済ニュースを取得（st.cache_data でキャッシュされるので後のニュースセクションと重複しない）
+        try:
+            _hc_pos_key = ",".join(
+                sorted(p.get("symbol", "") for p in positions if p.get("sector") != "Cash")
+            )
+            _hc_fx = snapshot.get("fx_rates", {})
+            _hc_news = load_economic_news(
+                _hc_pos_key, positions, _hc_fx,
+                llm_enabled=llm_enabled, llm_model=llm_model,
+                llm_cache_ttl=llm_cache_ttl_sec,
+            )
+        except Exception:
+            _hc_news = []
+
+        _hc_llm_summary = generate_health_summary(
+            health_data,
+            news_items=_hc_news,
+            model=llm_model, timeout=120, cache_ttl=llm_cache_ttl_sec,
+        )
+        if _hc_llm_summary:
+            st.session_state["_hc_llm_summary_data"] = _hc_llm_summary
+            for _sa in _hc_llm_summary.get("stock_assessments", []):
+                _sa_sym = _sa.get("symbol", "")
+                if _sa_sym:
+                    _hc_llm_assessment_map[_sa_sym] = _sa
+
     # --- 売りアラート通知 ---
     if sell_alerts:
         st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
@@ -734,6 +1194,17 @@ if health_data is not None:
             detail_html = ""
             for d in alert.get("details", []):
                 detail_html += f'<div class="sell-alert-detail">• {d}</div>'
+
+            # LLM 分析コメントを付加
+            _alert_sym = alert.get("symbol", "")
+            _llm_sa = _hc_llm_assessment_map.get(_alert_sym)
+            if _llm_sa:
+                _llm_text = _llm_sa.get("assessment", "")
+                if _llm_text:
+                    detail_html += (
+                        f'<div class="sell-alert-ai">'
+                        f'🤖 <strong>AI分析</strong>: {_llm_text}</div>'
+                    )
 
             pnl = alert.get("pnl_pct", 0)
             pnl_color = "#4ade80" if pnl >= 0 else "#f87171"
@@ -755,6 +1226,58 @@ if health_data is not None:
             )
     else:
         st.success("🟢 現在、売りタイミングの通知はありません")
+
+    # --- LLM ヘルスチェックサマリー表示 ---
+    if _hc_llm_summary:
+            st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+
+            _hcs_html = '<div class="health-summary-card">'
+            _hcs_html += '<div class="health-summary-header">🤖 ヘルスチェックサマリー</div>'
+
+            _hcs_overview = _hc_llm_summary.get("overview", "")
+            if _hcs_overview:
+                _hcs_html += f'<div class="health-summary-overview">{_hcs_overview}</div>'
+
+            _hcs_warning = _hc_llm_summary.get("risk_warning", "")
+            if _hcs_warning:
+                _hcs_html += (
+                    f'<div class="health-summary-warning">'
+                    f'⚠️ <strong>リスク注意</strong>: {_hcs_warning}</div>'
+                )
+
+            _hcs_assessments = _hc_llm_summary.get("stock_assessments", [])
+            if _hcs_assessments:
+                # アラートレベルを持つ銘柄マップ
+                _hc_alert_map: dict[str, str] = {}
+                for _hcp in hc_positions:
+                    _hc_alert_map[_hcp.get("symbol", "")] = _hcp.get("alert_level", "none")
+
+                _hcs_html += '<details class="health-summary-stocks-toggle">'
+                _hcs_html += f'<summary>📋 銘柄別コメント（{len(_hcs_assessments)}件）</summary>'
+
+                for _sa in _hcs_assessments:
+                    _sa_sym = _sa.get("symbol", "")
+                    _sa_name = _sa.get("name", _sa_sym)
+                    _sa_assessment = _sa.get("assessment", "")
+                    _sa_action = _sa.get("action", "")
+                    _sa_alert = _hc_alert_map.get(_sa_sym, "none")
+                    _sa_level_class = f" health-summary-stock-{_sa_alert}" if _sa_alert != "none" else ""
+                    _action_badge = (
+                        f'<span class="health-summary-action">{_sa_action}</span>'
+                        if _sa_action else ""
+                    )
+                    _hcs_html += (
+                        f'<div class="health-summary-stock{_sa_level_class}">'
+                        f'<div class="health-summary-stock-name">'
+                        f'{_sa_name} ({_sa_sym}){_action_badge}</div>'
+                        f'<div class="health-summary-stock-text">{_sa_assessment}</div>'
+                        f'</div>'
+                    )
+
+                _hcs_html += '</details>'
+
+            _hcs_html += '</div>'
+            st.markdown(_hcs_html, unsafe_allow_html=True)
 
     # --- 銘柄別ヘルスチェック詳細 ---
     st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
@@ -897,6 +1420,248 @@ if health_data is not None:
 
         else:
             st.info("保有銘柄データがありません")
+
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+# =====================================================================
+# 経済ニュース & PF影響
+# =====================================================================
+st.markdown('<div id="economic-news"></div>', unsafe_allow_html=True)
+st.markdown("### 📰 経済ニュース & PF影響")
+st.caption("主要指数・商品に関する最新ニュースと、ポートフォリオへの影響度を自動分析します。")
+
+try:
+    # キャッシュキー用にシンボルリストを文字列化
+    _pos_key = ",".join(
+        sorted(p.get("symbol", "") for p in positions if p.get("sector") != "Cash")
+    )
+    _fx_for_news = snapshot.get("fx_rates", {})
+    econ_news = load_economic_news(
+        _pos_key, positions, _fx_for_news,
+        llm_enabled=llm_enabled, llm_model=llm_model,
+        llm_cache_ttl=llm_cache_ttl_sec,
+    )
+except Exception as _news_err:
+    st.warning(f"経済ニュースの取得に失敗しました: {_news_err}")
+    econ_news = []
+
+if econ_news:
+    # 分析方法の表示
+    _any_llm = any(n.get("analysis_method") == "llm" for n in econ_news)
+    if _any_llm:
+        _cache_info = llm_get_cache_info()
+        if _cache_info["cached"] and _cache_info["age_sec"] > 10:
+            _age_m = _cache_info["age_sec"] // 60
+            st.caption(f"🤖 AI分析（{llm_model}）— 📦 キャッシュ済み（{_age_m}分前）")
+        else:
+            st.caption("🤖 AI分析（" + llm_model + "）")
+    else:
+        st.caption("🔑 キーワードベース分析")
+
+    # --- サマリーカード: 影響度別件数 ---
+    _n_high = sum(1 for n in econ_news if n["portfolio_impact"]["impact_level"] == "high")
+    _n_med = sum(1 for n in econ_news if n["portfolio_impact"]["impact_level"] == "medium")
+    _n_low = sum(1 for n in econ_news if n["portfolio_impact"]["impact_level"] == "low")
+    _n_none = sum(1 for n in econ_news if n["portfolio_impact"]["impact_level"] == "none")
+
+    ncol1, ncol2, ncol3, ncol4 = st.columns(4)
+    with ncol1:
+        st.markdown(_risk_card("🔴 高影響", str(_n_high),
+                               "#f87171" if _n_high > 0 else ""), unsafe_allow_html=True)
+    with ncol2:
+        st.markdown(_risk_card("🟡 中影響", str(_n_med),
+                               "#fbbf24" if _n_med > 0 else ""), unsafe_allow_html=True)
+    with ncol3:
+        st.markdown(_risk_card("🔵 低影響", str(_n_low),
+                               "#60a5fa" if _n_low > 0 else ""), unsafe_allow_html=True)
+    with ncol4:
+        st.markdown(_risk_card("⚪ 影響なし", str(_n_none), ""), unsafe_allow_html=True)
+
+    st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+
+    # --- LLM サマリー ---
+    if _any_llm:
+        _summary = generate_news_summary(
+            econ_news, positions,
+            model=llm_model, cache_ttl=llm_cache_ttl_sec,
+        )
+        if _summary:
+            _overview = _summary.get("overview", "")
+            _key_points = _summary.get("key_points", [])
+            _pf_alert = _summary.get("portfolio_alert", "")
+
+            # サマリーカード
+            _summary_html = '<div class="news-summary-card">'
+            _summary_html += '<div class="news-summary-header">📋 ニュースサマリー</div>'
+            if _overview:
+                _summary_html += f'<div class="news-summary-overview">{_overview}</div>'
+
+            if _key_points:
+                _summary_html += '<div class="news-summary-points">'
+                for _kp in _key_points:
+                    _icon = _kp.get("icon", "📌")
+                    _label = _kp.get("label", _kp.get("category", ""))
+                    _kp_summary = _kp.get("summary", "")
+                    _news_ids = _kp.get("news_ids", [])
+                    _ids_str = ""
+                    if _news_ids:
+                        _id_links = [f'<span class="news-ref">#{nid+1}</span>' for nid in _news_ids]
+                        _ids_str = f' <span class="news-refs">{", ".join(_id_links)}</span>'
+                    _summary_html += (
+                        f'<div class="news-summary-point">'
+                        f'<span class="news-summary-cat">{_icon} {_label}</span>'
+                        f'<span class="news-summary-text">{_kp_summary}{_ids_str}</span>'
+                        f'</div>'
+                    )
+                _summary_html += '</div>'
+
+            if _pf_alert:
+                _summary_html += (
+                    f'<div class="news-summary-alert">'
+                    f'⚠️ <strong>PF注意</strong>: {_pf_alert}</div>'
+                )
+
+            _summary_html += '</div>'
+            st.markdown(_summary_html, unsafe_allow_html=True)
+            st.markdown('<div class="kpi-spacer"></div>', unsafe_allow_html=True)
+
+    # --- ニュースカード表示 ---
+    # PF影響ありのニュースを先に表示
+    _impact_news = [n for n in econ_news if n["portfolio_impact"]["impact_level"] != "none"]
+    _other_news = [n for n in econ_news if n["portfolio_impact"]["impact_level"] == "none"]
+
+    # ニュースにインデックス番号を付与（サマリーからのトレース用）
+    _news_index_map: dict[int, int] = {}  # original_idx -> display_number
+    for _disp_num, _news in enumerate(econ_news, 1):
+        _news["_display_number"] = _disp_num
+
+    if _impact_news:
+        with st.expander(f"⚡ PF影響のあるニュース（{len(_impact_news)}件）", expanded=False):
+            for news_item in _impact_news:
+                _impact = news_item["portfolio_impact"]
+                _impact_level = _impact["impact_level"]
+                _impact_labels = {"high": "高影響", "medium": "中影響", "low": "低影響"}
+                _impact_colors = {"high": "impact-high", "medium": "impact-medium", "low": "impact-low"}
+
+                # カテゴリバッジ
+                _cat_badges = ""
+                for cat in news_item.get("categories", []):
+                    _cat_badges += (
+                        f'<span class="news-badge news-badge-category">'
+                        f'{cat["icon"]} {cat["label"]}</span>'
+                    )
+
+                # 影響度バッジ
+                _impact_badge = (
+                    f'<span class="news-badge news-badge-{_impact_colors.get(_impact_level, "")}">'
+                    f'{_impact_labels.get(_impact_level, "")} — '
+                    f'{len(_impact["affected_holdings"])}銘柄</span>'
+                )
+
+                # 影響銘柄リスト
+                _affected_html = ""
+                if _impact["affected_holdings"]:
+                    _syms = ", ".join(_impact["affected_holdings"][:8])
+                    _affected_html = (
+                        f'<div class="news-affected">'
+                        f'📌 影響銘柄: {_syms}</div>'
+                    )
+
+                # LLM分析の理由（あれば表示）
+                _reason_html = ""
+                _reason = _impact.get("reason", "")
+                if _reason and news_item.get("analysis_method") == "llm":
+                    _reason_html = (
+                        f'<div style="font-size:0.82rem; margin-top:4px; opacity:0.85;">'
+                        f'💡 {_reason}</div>'
+                    )
+
+                # タイトルリンク
+                _link = news_item.get("link", "")
+                _disp_no = news_item.get("_display_number", "")
+                _num_badge = f'<span class="news-number">#{_disp_no}</span>' if _disp_no else ""
+                _title_html = (
+                    f'<a href="{_link}" target="_blank">{news_item["title"]}</a>'
+                    if _link else news_item["title"]
+                )
+
+                # 発行元・日時
+                _pub = news_item.get("publisher", "")
+                _time = news_item.get("publish_time", "")
+                _source = news_item.get("source_name", "")
+                _meta_parts = [p for p in [_pub, _source, _time[:16] if _time else ""] if p]
+                _meta = " · ".join(_meta_parts)
+
+                st.markdown(
+                    f'<div class="news-card news-{_impact_colors.get(_impact_level, "impact-none")}">'
+                    f'<div class="news-title">{_num_badge}{_title_html}</div>'
+                    f'{_affected_html}'
+                    f'{_reason_html}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+    if _other_news:
+        with st.expander(f"📋 その他のニュース（{len(_other_news)}件）", expanded=False):
+            for news_item in _other_news:
+                _link = news_item.get("link", "")
+                _disp_no = news_item.get("_display_number", "")
+                _num_badge = f'<span class="news-number">#{_disp_no}</span>' if _disp_no else ""
+                _title_html = (
+                    f'<a href="{_link}" target="_blank">{news_item["title"]}</a>'
+                    if _link else news_item["title"]
+                )
+                _pub = news_item.get("publisher", "")
+                _time = news_item.get("publish_time", "")
+                _source = news_item.get("source_name", "")
+                _meta_parts = [p for p in [_pub, _source, _time[:16] if _time else ""] if p]
+                _meta = " · ".join(_meta_parts)
+
+                _cat_badges = ""
+                for cat in news_item.get("categories", []):
+                    _cat_badges += (
+                        f'<span class="news-badge news-badge-category">'
+                        f'{cat["icon"]} {cat["label"]}</span>'
+                    )
+
+                st.markdown(
+                    f'<div class="news-card news-impact-none">'
+                    f'<div class="news-title">{_num_badge}{_title_html}</div>'
+                    f'<div class="news-meta">{_meta}</div>'
+                    f'<div>{_cat_badges}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+else:
+    st.info("📰 経済ニュースの取得なし（ネットワーク接続を確認してください）")
+
+# --- Copilot CLI 実行ログ ---
+_cli_logs = copilot_get_logs()
+if _cli_logs:
+    with st.expander(f"🔍 Copilot CLI 実行ログ（{len(_cli_logs)}件）", expanded=False):
+        _log_col1, _log_col2 = st.columns([6, 1])
+        with _log_col2:
+            if st.button("🗑️ クリア", key="clear_cli_logs"):
+                copilot_clear_logs()
+                st.rerun()
+        for _log in _cli_logs:
+            import datetime as _dt
+            _ts = _dt.datetime.fromtimestamp(_log.timestamp).strftime("%H:%M:%S")
+            _status = "✅" if _log.success else "❌"
+            _src = f" [{_log.source}]" if _log.source else ""
+            _header = f"{_status} {_ts} — {_log.model} ({_log.duration_sec:.1f}s){_src}"
+            if _log.success:
+                _detail = (
+                    f"**プロンプト** (先頭150文字):\n```\n{_log.prompt_preview}\n```\n\n"
+                    f"**応答** ({_log.response_length}文字):\n```\n{_log.response_preview}\n```"
+                )
+            else:
+                _detail = (
+                    f"**プロンプト** (先頭150文字):\n```\n{_log.prompt_preview}\n```\n\n"
+                    f"**エラー**: `{_log.error}`"
+                )
+            with st.expander(_header, expanded=False):
+                st.markdown(_detail)
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
@@ -1236,6 +2001,218 @@ if not trade_act_df.empty:
         )
 else:
     st.info("取引データがありません")
+
+st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+
+# =====================================================================
+# Copilot チャット
+# =====================================================================
+st.markdown('<div id="copilot-chat"></div>', unsafe_allow_html=True)
+st.markdown("### 💬 Copilot に相談")
+st.caption("ダッシュボードの全データを踏まえて、Copilot に自由に質問できます。")
+
+# チャット履歴の初期化
+if "copilot_chat_messages" not in st.session_state:
+    st.session_state["copilot_chat_messages"] = []
+
+
+# --- ダッシュボードコンテキストを自動構築 ---
+def _build_chat_context() -> str:
+    """ダッシュボード上の全情報をプロンプトコンテキストとして構築する."""
+    parts: list[str] = []
+    parts.append("## ポートフォリオ概要")
+    parts.append(f"総資産: ¥{total_value:,.0f}")
+    parts.append(f"前日比: ¥{_dc_jpy:+,.0f} ({_dc_pct:+.1f}%)")
+    parts.append(f"含み損益: ¥{unrealized_pnl:,.0f} ({unrealized_pnl_pct:+.1f}%)")
+    parts.append(f"実現損益: ¥{realized_pnl:,.0f}")
+    parts.append(f"トータル損益: ¥{total_pnl:,.0f}")
+    parts.append(f"銘柄数: {len(positions)}")
+
+    # リスク指標
+    if not history_df.empty:
+        try:
+            _ctx_risk = compute_risk_metrics(history_df)
+            parts.append("\n## リスク指標")
+            parts.append(f"シャープレシオ: {_ctx_risk['sharpe_ratio']:.2f}")
+            parts.append(f"ボラティリティ: {_ctx_risk['volatility_pct']:.1f}%")
+            parts.append(f"最大ドローダウン: {_ctx_risk['max_drawdown_pct']:.1f}%")
+        except Exception:
+            pass
+
+    # 保有銘柄
+    parts.append("\n## 保有銘柄")
+    for p in positions:
+        _sym = p.get("symbol", "")
+        _name = p.get("name", "")
+        _pnl = p.get("pnl_pct", 0)
+        _eval_jpy = p.get("evaluation_jpy", 0)
+        _sector = p.get("sector", "")
+        _weight = (_eval_jpy / total_value * 100) if total_value else 0
+        parts.append(f"- {_name} ({_sym}): 評価額¥{_eval_jpy:,.0f} 構成比{_weight:.1f}% 損益{_pnl:+.1f}% セクター:{_sector}")
+
+    # ヘルスチェック結果
+    if health_data is not None:
+        _hc_pos = health_data["positions"]
+        _hc_alerts_list = health_data["sell_alerts"]
+        _alert_pos = [p for p in _hc_pos if p.get("alert_level") != "none"]
+        if _alert_pos:
+            parts.append("\n## ヘルスチェック アラート")
+            for _hp in _alert_pos:
+                _hp_sym = _hp.get("symbol", "")
+                _hp_name = _hp.get("name", "")
+                _hp_level = _hp.get("alert_level", "")
+                _hp_reasons = ", ".join(_hp.get("alert_reasons", []))
+                _hp_trend = _hp.get("trend", "")
+                parts.append(f"- {_hp_name} ({_hp_sym}): [{_hp_level}] {_hp_reasons} トレンド:{_hp_trend}")
+
+        # 売りアラート
+        if _hc_alerts_list:
+            parts.append("\n## 売りタイミング通知")
+            for _sa_ctx in _hc_alerts_list:
+                parts.append(f"- {_sa_ctx.get('name', '')} ({_sa_ctx.get('symbol', '')}): {_sa_ctx.get('action', '')} — {_sa_ctx.get('reason', '')}")
+
+    # LLM ヘルスサマリー（session_stateに格納されていれば利用）
+    _chat_hc_summary = st.session_state.get("_hc_llm_summary_data")
+    if _chat_hc_summary:
+        parts.append("\n## AI ヘルスチェック分析")
+        _overview_ctx = _chat_hc_summary.get("overview", "")
+        if _overview_ctx:
+            parts.append(_overview_ctx)
+        _warning_ctx = _chat_hc_summary.get("risk_warning", "")
+        if _warning_ctx:
+            parts.append(f"リスク注意: {_warning_ctx}")
+
+    # 経済ニュース
+    try:
+        _chat_econ_news = econ_news  # noqa: F841 — top-level variable
+    except NameError:
+        _chat_econ_news = []
+    if _chat_econ_news:
+        _impact_items = [n for n in _chat_econ_news if n.get("portfolio_impact", {}).get("impact_level") != "none"]
+        if _impact_items:
+            parts.append("\n## 経済ニュース（PF影響あり）")
+            for _ni in _impact_items[:10]:  # 最大10件
+                _ni_title = _ni.get("title", "")
+                _ni_impact = _ni.get("portfolio_impact", {})
+                _ni_level = _ni_impact.get("impact_level", "")
+                _ni_reason = _ni_impact.get("reason", "")
+                parts.append(f"- [{_ni_level}] {_ni_title}: {_ni_reason}")
+
+    return "\n".join(parts)
+
+
+# コンテキストバッジ
+_ctx_items = []
+_ctx_items.append(f"銘柄 {len(positions)}")
+if health_data is not None:
+    _n_alerts = sum(1 for p in health_data["positions"] if p.get("alert_level") != "none")
+    if _n_alerts:
+        _ctx_items.append(f"アラート {_n_alerts}")
+    if health_data["sell_alerts"]:
+        _ctx_items.append(f"売り通知 {len(health_data['sell_alerts'])}")
+if st.session_state.get("_hc_llm_summary_data"):
+    _ctx_items.append("AI分析")
+try:
+    if econ_news:
+        _ctx_items.append(f"ニュース {len(econ_news)}")
+except NameError:
+    pass
+
+_badges_html = " ".join(
+    f'<span class="copilot-chat-context-badge">{item}</span>'
+    for item in _ctx_items
+)
+st.markdown(
+    f'<div style="margin-bottom:10px;">'
+    f'<span style="font-size:0.82rem; opacity:0.7;">📎 自動添付コンテキスト:</span> '
+    f'{_badges_html}</div>',
+    unsafe_allow_html=True,
+)
+
+# モデル表示 & クリアボタン
+_chat_col_model, _chat_col_clear = st.columns([4, 1])
+with _chat_col_model:
+    _chat_model_ids = [m[0] for m in COPILOT_MODELS]
+    _chat_model_labels = [m[1] for m in COPILOT_MODELS]
+    _chat_model_current_idx = (
+        _chat_model_ids.index(chat_model)
+        if chat_model in _chat_model_ids
+        else 0
+    )
+    st.caption(f"🧠 モデル: **{_chat_model_labels[_chat_model_current_idx]}**（設定で変更可能）")
+with _chat_col_clear:
+    if st.button("🗑️ クリア", key="copilot_chat_clear"):
+        st.session_state["copilot_chat_messages"] = []
+        st.rerun()
+
+# チャット履歴表示
+for _msg in st.session_state["copilot_chat_messages"]:
+    if _msg["role"] == "user":
+        st.markdown(
+            f'<div class="copilot-chat-msg copilot-chat-msg-user">'
+            f'<div class="copilot-chat-msg-role">👤 あなた</div>'
+            f'<div class="copilot-chat-msg-text">{_msg["content"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="copilot-chat-msg copilot-chat-msg-ai">'
+            '<div class="copilot-chat-msg-role">🤖 Copilot</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(_msg["content"])
+
+# 入力欄
+_chat_input = st.chat_input(
+    "ダッシュボードについて質問...",
+    key="copilot_chat_input",
+)
+
+if _chat_input:
+    # ユーザーメッセージを追加
+    st.session_state["copilot_chat_messages"].append(
+        {"role": "user", "content": _chat_input}
+    )
+
+    # コンテキスト付きプロンプトを構築
+    _dashboard_ctx = _build_chat_context()
+    _chat_prompt = (
+        "あなたはポートフォリオ分析の専門家です。\n"
+        "以下のダッシュボード情報を踏まえて、ユーザーの質問に日本語で回答してください。\n"
+        "回答は簡潔かつ具体的に。数値データを活用してください。\n\n"
+        f"--- ダッシュボードデータ ---\n{_dashboard_ctx}\n\n"
+    )
+    # 直近の会話履歴を含める（最大5往復）
+    _recent_msgs = st.session_state["copilot_chat_messages"][-10:]
+    if len(_recent_msgs) > 1:
+        _chat_prompt += "--- 会話履歴 ---\n"
+        for _hm in _recent_msgs[:-1]:  # 最新のユーザー入力以外
+            _hm_role = "ユーザー" if _hm["role"] == "user" else "アシスタント"
+            _chat_prompt += f"{_hm_role}: {_hm['content']}\n"
+        _chat_prompt += "\n"
+
+    _chat_prompt += f"--- ユーザーの質問 ---\n{_chat_input}"
+
+    # Copilot CLI 呼び出し
+    with st.spinner("🤖 Copilot が考えています..."):
+        _chat_response = copilot_call(
+            _chat_prompt,
+            model=chat_model,
+            timeout=120,
+            source="dashboard_chat",
+        )
+
+    if _chat_response:
+        st.session_state["copilot_chat_messages"].append(
+            {"role": "assistant", "content": _chat_response}
+        )
+    else:
+        st.session_state["copilot_chat_messages"].append(
+            {"role": "assistant", "content": "⚠️ 応答を取得できませんでした。Copilot CLI の状態を確認してください。"}
+        )
+    st.rerun()
 
 # =====================================================================
 # フッター

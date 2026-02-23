@@ -94,6 +94,10 @@ class TestSaveSettings:
             "target_amount_man": 8000,
             "projection_years": 10,
             "auto_refresh_label": "1分",
+            "llm_enabled": True,
+            "llm_model": "claude-sonnet-4",
+            "llm_cache_ttl_label": "3時間",
+            "chat_model": "gpt-4.1",
         }
         save_settings(settings, p)
         loaded = load_settings(p)
